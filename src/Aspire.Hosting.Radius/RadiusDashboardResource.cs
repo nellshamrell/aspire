@@ -19,7 +19,7 @@ public class RadiusDashboardResource(string name) : ContainerResource(name)
     /// <summary>
     /// The default tag for the Radius dashboard container image.
     /// </summary>
-    internal const string DefaultTag = "latest";
+    internal const string DefaultTag = "0.55";
 
     /// <summary>
     /// The default port exposed by the Radius dashboard.

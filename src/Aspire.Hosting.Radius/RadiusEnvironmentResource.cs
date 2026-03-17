@@ -28,6 +28,11 @@ public class RadiusEnvironmentResource : Resource, IComputeEnvironmentResource
     public EndpointReference? DashboardEndpoint { get; internal set; }
 
     /// <summary>
+    /// Gets or sets the dashboard resource builder, if dashboard is enabled.
+    /// </summary>
+    internal IResourceBuilder<RadiusDashboardResource>? Dashboard { get; set; }
+
+    /// <summary>
     /// Initializes a new instance of the <see cref="RadiusEnvironmentResource"/> class.
     /// </summary>
     /// <param name="name">The name of the Radius environment.</param>

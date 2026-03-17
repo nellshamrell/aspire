@@ -4,6 +4,8 @@
 #pragma warning disable ASPIRECOMPUTE002
 
 using Aspire.Hosting.ApplicationModel;
+using Aspire.Hosting.Eventing;
+using Aspire.Hosting.Lifecycle;
 using Aspire.Hosting.Testing;
 using Aspire.Hosting.Utils;
 using Microsoft.Extensions.DependencyInjection;
@@ -91,5 +93,25 @@ internal static class RadiusTestHelper
     public static IEnumerable<DeploymentTargetAnnotation> GetDeploymentTargetAnnotations(IResource resource)
     {
         return resource.Annotations.OfType<DeploymentTargetAnnotation>();
+    }
+
+    /// <summary>
+    /// Activates all registered event subscribers and publishes a <see cref="BeforeStartEvent"/>.
+    /// This simulates what happens during <c>StartAsync()</c> without actually starting the application.
+    /// </summary>
+    public static async Task PublishBeforeStartEventAsync(DistributedApplication app)
+    {
+        var appModel = app.Services.GetRequiredService<DistributedApplicationModel>();
+        var eventing = app.Services.GetRequiredService<IDistributedApplicationEventing>();
+        var executionContext = app.Services.GetRequiredService<DistributedApplicationExecutionContext>();
+
+        // Activate subscribers (normally done during StartAsync)
+        var subscribers = app.Services.GetServices<IDistributedApplicationEventingSubscriber>();
+        foreach (var subscriber in subscribers)
+        {
+            await subscriber.SubscribeAsync(eventing, executionContext, CancellationToken.None);
+        }
+
+        await eventing.PublishAsync(new BeforeStartEvent(app.Services, appModel), CancellationToken.None);
     }
 }

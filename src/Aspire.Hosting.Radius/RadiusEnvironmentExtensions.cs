@@ -32,9 +32,27 @@ public static class RadiusEnvironmentExtensions
 
         builder.Services.TryAddEventingSubscriber<RadiusInfrastructure>();
 
-        var resource = new RadiusEnvironmentResource(name);
+        var resource = new RadiusEnvironmentResource(name)
+        {
+            Dashboard = CreateRadiusDashboard(builder, $"{name}-dashboard")
+        };
 
         return builder.AddResource(resource);
+    }
+
+    /// <summary>
+    /// Creates a new Radius Dashboard resource builder with the specified name.
+    /// </summary>
+    internal static IResourceBuilder<RadiusDashboardResource> CreateRadiusDashboard(
+        IDistributedApplicationBuilder builder,
+        string name)
+    {
+        var resource = new RadiusDashboardResource(name);
+
+        return builder.CreateResourceBuilder(resource)
+                      .WithImage(RadiusDashboardResource.DefaultImage, RadiusDashboardResource.DefaultTag)
+                      .WithHttpEndpoint(targetPort: RadiusDashboardResource.DefaultPort, name: "http")
+                      .WithEndpoint("http", e => e.IsExternal = true);
     }
 
     /// <summary>

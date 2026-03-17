@@ -19,19 +19,32 @@ namespace Aspire.Hosting.Radius;
 internal sealed class RadiusInfrastructure(
     ILogger<RadiusInfrastructure> logger) : IDistributedApplicationEventingSubscriber
 {
-    internal async Task OnBeforeStartAsync(BeforeStartEvent @event, CancellationToken cancellationToken = default)
+    internal Task OnBeforeStartAsync(BeforeStartEvent @event, CancellationToken cancellationToken = default)
     {
         var radiusEnvironments = @event.Model.Resources.OfType<RadiusEnvironmentResource>().ToArray();
 
         if (radiusEnvironments.Length == 0)
         {
-            return;
+            return Task.CompletedTask;
         }
 
         foreach (var environment in radiusEnvironments)
         {
             logger.LogInformation("Configuring Radius environment '{EnvironmentName}' (namespace: {Namespace}, dashboard: {DashboardEnabled})",
                 environment.Name, environment.Namespace, environment.DashboardEnabled);
+
+            // Register dashboard container in the model if enabled
+            if (environment.DashboardEnabled && environment.Dashboard?.Resource is RadiusDashboardResource dashboard)
+            {
+                @event.Model.Resources.Add(dashboard);
+                environment.DashboardEndpoint = dashboard.PrimaryEndpoint;
+                logger.LogInformation("Radius dashboard enabled for environment '{EnvironmentName}' on port {Port}",
+                    environment.Name, RadiusDashboardResource.DefaultPort);
+            }
+            else if (!environment.DashboardEnabled)
+            {
+                logger.LogInformation("Radius dashboard disabled for environment '{EnvironmentName}'", environment.Name);
+            }
 
             foreach (var r in @event.Model.GetComputeResources())
             {
@@ -47,13 +60,9 @@ internal sealed class RadiusInfrastructure(
                     ComputeEnvironment = environment
                 });
             }
-
-            // Dashboard container creation will be implemented in Phase 3 (T027)
-            if (environment.DashboardEnabled)
-            {
-                logger.LogInformation("Radius dashboard enabled for environment '{EnvironmentName}'", environment.Name);
-            }
         }
+
+        return Task.CompletedTask;
     }
 
     /// <inheritdoc />

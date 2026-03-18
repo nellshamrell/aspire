@@ -6,6 +6,7 @@
 
 using Aspire.Hosting.ApplicationModel;
 using Aspire.Hosting.Pipelines;
+using Aspire.Hosting.Radius.Deployment;
 using Aspire.Hosting.Radius.Publishing;
 using Aspire.Hosting.Utils;
 
@@ -51,6 +52,21 @@ public class RadiusEnvironmentResource : Resource, IComputeEnvironmentResource
                 Action = ctx => PublishAsync(ctx)
             };
             step.RequiredBy(WellKnownPipelineSteps.Publish);
+            return step;
+        }));
+
+        Annotations.Add(new PipelineStepAnnotation(context =>
+        {
+            var step = new PipelineStep
+            {
+                Name = $"deploy-{Name}",
+                Description = $"Deploys the Radius application for environment {Name} via 'rad deploy'.",
+                Action = ctx => RadiusDeploymentPipelineStep.ExecuteAsync(ctx, this),
+                Tags = [WellKnownPipelineTags.DeployCompute]
+            };
+            step.DependsOn($"publish-{Name}");
+            step.DependsOn(WellKnownPipelineSteps.Build);
+            step.RequiredBy(WellKnownPipelineSteps.Deploy);
             return step;
         }));
     }

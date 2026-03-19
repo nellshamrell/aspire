@@ -166,7 +166,7 @@ public class BicepToRadDeployCompatibilityTests
 
         // Environment should come before application
         var envIdx = bicep.IndexOf("resource radius 'Applications.Core/environments", StringComparison.Ordinal);
-        var appIdx = bicep.IndexOf("resource radius 'Applications.Core/applications", StringComparison.Ordinal);
+        var appIdx = bicep.IndexOf("resource radiusapp 'Applications.Core/applications", StringComparison.Ordinal);
         // Find the portable resource declaration (not the recipe reference in the environment block)
         var portableIdx = bicep.IndexOf("resource cache 'Applications.Datastores/redisCaches", StringComparison.Ordinal);
         var containerIdx = bicep.IndexOf("resource webapi 'Applications.Core/containers", StringComparison.Ordinal);

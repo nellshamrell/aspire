@@ -87,9 +87,9 @@ internal sealed class RadiusBicepPublishingContext(
             }
         }
 
-        // 1. Add environment resource with recipe registrations
+        // 1. Add environment resource with compute target and recipe registrations
         var recipes = BuildRecipeRegistrations(portableResources);
-        builder.AddEnvironmentResource(environment.Name, recipes.Count > 0 ? recipes : null);
+        builder.AddEnvironmentResource(environment.Name, environment.Namespace, recipes.Count > 0 ? recipes : null);
 
         // 2. Add application resource
         var appName = GetApplicationName(model);

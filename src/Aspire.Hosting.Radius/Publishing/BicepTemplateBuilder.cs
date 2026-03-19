@@ -21,12 +21,17 @@ internal sealed class BicepTemplateBuilder
     /// Adds the Radius environment resource block to the Bicep template.
     /// </summary>
     /// <param name="name">The environment resource name.</param>
+    /// <param name="kubernetesNamespace">The Kubernetes namespace for the compute target.</param>
     /// <param name="recipes">Dictionary of resource type → recipe configuration.</param>
-    public void AddEnvironmentResource(string name, Dictionary<string, string>? recipes = null)
+    public void AddEnvironmentResource(string name, string kubernetesNamespace, Dictionary<string, string>? recipes = null)
     {
         LineF($"resource {SanitizeName(name)} 'Applications.Core/environments@{ResourceTypeMapper.DefaultApiVersion}' = {{");
         LineF($"  name: '{name}'");
         Line("  properties: {");
+        Line("    compute: {");
+        Line("      kind: 'kubernetes'");
+        LineF($"      namespace: '{kubernetesNamespace}'");
+        Line("    }");
 
         if (recipes is not null && recipes.Count > 0)
         {

@@ -167,7 +167,7 @@ internal sealed class RadiusBicepPublishingContext(
     {
         var image = GetContainerImage(resource);
         var connections = BuildConnections(resource, portableResources);
-        var envVars = BuildEnvironmentVariables(resource, portableResources);
+        var envVars = BuildEnvironmentVariables();
 
         builder.AddWorkloadResource(
             resource.Name,
@@ -198,9 +198,11 @@ internal sealed class RadiusBicepPublishingContext(
 
     private static string GetApplicationName(DistributedApplicationModel model)
     {
-        // Use the first environment's name or a sanitized model name
+        // Derive a distinct application name from the environment name to avoid
+        // Bicep identifier collisions (BCP028) with the environment resource.
         var radiusEnv = model.Resources.OfType<RadiusEnvironmentResource>().FirstOrDefault();
-        return radiusEnv?.Name ?? "app";
+        var envName = radiusEnv?.Name ?? "default";
+        return $"{envName}-app";
     }
 
     private static string GetContainerImage(IResource resource)
@@ -238,26 +240,13 @@ internal sealed class RadiusBicepPublishingContext(
         return connections;
     }
 
-    private static Dictionary<string, string> BuildEnvironmentVariables(IResource resource, List<IResource> portableResources)
+    private static Dictionary<string, string> BuildEnvironmentVariables()
     {
-        var envVars = new Dictionary<string, string>();
-
-        // Map connections from portable resources to environment variables
-        if (resource.TryGetAnnotationsOfType<ResourceRelationshipAnnotation>(out var refs))
-        {
-            foreach (var refAnnotation in refs)
-            {
-                var referencedResource = refAnnotation.Resource;
-                if (portableResources.Any(r => r.Name == referencedResource.Name))
-                {
-                    var sanitizedRef = BicepTemplateBuilder.SanitizeName(referencedResource.Name);
-                    var envKey = $"ConnectionStrings__{referencedResource.Name}";
-                    envVars[envKey] = $"{sanitizedRef}.connectionString()";
-                }
-            }
-        }
-
-        return envVars;
+        // Radius portable resources don't expose a connectionString() Bicep function.
+        // Connection information is injected automatically via the 'connections' block
+        // on the container resource, so no explicit environment variables are needed
+        // for portable resource references.
+        return new Dictionary<string, string>();
     }
 
     private static RadiusResourceCustomization? GetCustomization(IResource resource)

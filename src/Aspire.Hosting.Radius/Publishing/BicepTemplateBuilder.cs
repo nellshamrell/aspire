@@ -18,6 +18,16 @@ internal sealed class BicepTemplateBuilder
     private void LineF(FormattableString formattable) => _sb.AppendLine(formattable.ToString(CultureInfo.InvariantCulture));
 
     /// <summary>
+    /// Adds the Radius extension directive required by the Bicep deployment engine.
+    /// This must be called before adding any resource blocks.
+    /// </summary>
+    public void AddExtensionDirective()
+    {
+        Line("extension radius");
+        Line();
+    }
+
+    /// <summary>
     /// Adds the Radius environment resource block to the Bicep template.
     /// </summary>
     /// <param name="name">The environment resource name.</param>
@@ -41,7 +51,8 @@ internal sealed class BicepTemplateBuilder
                 LineF($"      '{type}': {{");
                 LineF($"        '{recipeName}': {{");
                 Line("          templateKind: 'bicep'");
-                Line("          templatePath: 'ghcr.io/radius-project/recipes/local-dev'");
+                var recipePathSuffix = type.Split('/').Last().ToLowerInvariant();
+                LineF($"          templatePath: 'ghcr.io/radius-project/recipes/local-dev/{recipePathSuffix}:latest'");
                 Line("        }");
                 Line("      }");
             }
@@ -168,6 +179,7 @@ internal sealed class BicepTemplateBuilder
         LineF($"    application: {sanitizedAppName}.id");
         Line("    container: {");
         LineF($"      image: '{image}'");
+        Line("      imagePullPolicy: 'Never'");
 
         if (environmentVariables is not null && environmentVariables.Count > 0)
         {
@@ -230,6 +242,17 @@ internal sealed class BicepTemplateBuilder
             result = "r" + result;
         }
 
-        return result.Length == 0 ? "resource" : result;
+        if (result.Length == 0)
+        {
+            result = "resource";
+        }
+
+        // Avoid collision with the 'radius' Bicep extension name
+        if (string.Equals(result, "radius", StringComparison.OrdinalIgnoreCase))
+        {
+            result = result + "env";
+        }
+
+        return result;
     }
 }

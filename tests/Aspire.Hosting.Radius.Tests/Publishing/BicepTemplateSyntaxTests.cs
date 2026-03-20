@@ -36,6 +36,7 @@ public class BicepTemplateSyntaxTests
         var bicep = context.GenerateBicep(model, environment);
 
         // Verify resource blocks have correct Bicep syntax
+        Assert.Contains("extension radius", bicep);
         Assert.Contains("resource ", bicep);
         Assert.Contains(" = {", bicep);
         Assert.Contains("properties: {", bicep);
@@ -123,6 +124,7 @@ public class BicepTemplateSyntaxTests
         // Environment should have recipe registrations for portable resources
         Assert.Contains("recipes:", bicep);
         Assert.Contains("Applications.Datastores/redisCaches", bicep);
+        Assert.Contains("ghcr.io/radius-project/recipes/local-dev/rediscaches:latest", bicep);
     }
 
     [Fact]
@@ -158,5 +160,7 @@ public class BicepTemplateSyntaxTests
         Assert.Equal("myresource", BicepTemplateBuilder.SanitizeName("my resource"));
         Assert.Equal("r123", BicepTemplateBuilder.SanitizeName("123"));
         Assert.Equal("my_resource", BicepTemplateBuilder.SanitizeName("my_resource"));
+        // "radius" is reserved by the Bicep extension directive
+        Assert.Equal("radiusenv", BicepTemplateBuilder.SanitizeName("radius"));
     }
 }

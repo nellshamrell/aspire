@@ -22,6 +22,18 @@ internal sealed class RadiusBicepPublishingContext(
 {
     internal string OutputPath { get; } = outputPath;
 
+    private const string BicepConfigContent = """
+        {
+            "experimentalFeaturesEnabled": {
+                "extensibility": true
+            },
+            "extensions": {
+                "radius": "br:biceptypes.azurecr.io/radius:latest",
+                "aws": "br:biceptypes.azurecr.io/aws:latest"
+            }
+        }
+        """;
+
     /// <summary>
     /// Writes the Bicep template for the given model and Radius environment to the output directory.
     /// </summary>
@@ -45,6 +57,11 @@ internal sealed class RadiusBicepPublishingContext(
         var bicepContent = GenerateBicep(model, environment);
 
         Directory.CreateDirectory(OutputPath);
+
+        // Write bicepconfig.json to enable the Radius Bicep extension
+        var bicepConfigPath = Path.Combine(OutputPath, "bicepconfig.json");
+        await File.WriteAllTextAsync(bicepConfigPath, BicepConfigContent, cancellationToken).ConfigureAwait(false);
+
         var bicepFilePath = Path.Combine(OutputPath, "app.bicep");
         await File.WriteAllTextAsync(bicepFilePath, bicepContent, cancellationToken).ConfigureAwait(false);
 
@@ -57,6 +74,9 @@ internal sealed class RadiusBicepPublishingContext(
     internal string GenerateBicep(DistributedApplicationModel model, RadiusEnvironmentResource environment)
     {
         var builder = new BicepTemplateBuilder();
+
+        // Add the extension directive first — required by the Radius deployment engine
+        builder.AddExtensionDirective();
 
         // Classify resources
         var portableResources = new List<IResource>();

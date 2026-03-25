@@ -7,6 +7,7 @@
 using Aspire.Hosting.ApplicationModel;
 using Aspire.Hosting.Eventing;
 using Aspire.Hosting.Lifecycle;
+using Aspire.Hosting.Radius.Preview;
 using Microsoft.Extensions.Logging;
 
 namespace Aspire.Hosting.Radius;
@@ -19,13 +20,13 @@ namespace Aspire.Hosting.Radius;
 internal sealed class RadiusInfrastructure(
     ILogger<RadiusInfrastructure> logger) : IDistributedApplicationEventingSubscriber
 {
-    internal Task OnBeforeStartAsync(BeforeStartEvent @event, CancellationToken cancellationToken = default)
+    internal async Task OnBeforeStartAsync(BeforeStartEvent @event, CancellationToken cancellationToken = default)
     {
         var radiusEnvironments = @event.Model.Resources.OfType<RadiusEnvironmentResource>().ToArray();
 
         if (radiusEnvironments.Length == 0)
         {
-            return Task.CompletedTask;
+            return;
         }
 
         foreach (var environment in radiusEnvironments)
@@ -36,6 +37,15 @@ internal sealed class RadiusInfrastructure(
             // Register dashboard container in the model if enabled
             if (environment.DashboardEnabled && environment.Dashboard?.Resource is RadiusDashboardResource dashboard)
             {
+                // Generate preview data before starting the dashboard
+                var previewDir = Path.Combine(Path.GetTempPath(), $"radius-preview-{Guid.NewGuid():N}");
+                var generator = new PreviewGraphGenerator(logger);
+                await generator.GenerateAsync(@event.Model, environment, previewDir, cancellationToken).ConfigureAwait(false);
+
+                // Add bind mount and env var to dashboard container
+                environment.Dashboard.WithBindMount(previewDir, "/app/preview", isReadOnly: true);
+                environment.Dashboard.WithEnvironment("RADIUS_PREVIEW_MODE", "true");
+
                 @event.Model.Resources.Add(dashboard);
                 environment.DashboardEndpoint = dashboard.PrimaryEndpoint;
                 logger.LogInformation("Radius dashboard enabled for environment '{EnvironmentName}' on port {Port}",
@@ -61,8 +71,6 @@ internal sealed class RadiusInfrastructure(
                 });
             }
         }
-
-        return Task.CompletedTask;
     }
 
     /// <inheritdoc />

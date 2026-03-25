@@ -44,7 +44,7 @@ internal static class RadiusDeploymentPipelineStep
                 logger,
                 cancellationToken);
 
-            await publishingContext.WriteModelAsync(context.Model, environment).ConfigureAwait(false);
+            await publishingContext.WriteModelAsync(context.Model, environment, environment.ConfigureInfrastructureCallback).ConfigureAwait(false);
         }
 
         if (!File.Exists(bicepFilePath))

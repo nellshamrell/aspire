@@ -5,6 +5,7 @@
 
 using Aspire.Hosting.ApplicationModel;
 using Aspire.Hosting.Radius.Publishing;
+using Aspire.Hosting.Radius.Provisioning;
 using Aspire.Hosting.Utils;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -124,6 +125,49 @@ public class BicepGenerationTests
         // The webapi container should have connection info for the redis cache
         Assert.Contains("cache", bicep);
         Assert.Contains("webapi", bicep);
+    }
+
+    [Fact]
+    public async Task ConfigureRadiusInfrastructure_CanMutateDynamicRecipesAndConnections()
+    {
+        using var builder = TestDistributedApplicationBuilder.Create("--publisher", "manifest");
+
+        builder.AddRadiusEnvironment("radius")
+            .ConfigureRadiusInfrastructure(infra =>
+            {
+                var env = infra.GetProvisionableResources().OfType<RadiusEnvironmentConstruct>().Single();
+                env.RemoveRecipe("Applications.Datastores/redisCaches");
+                env.AddRecipe(
+                    "Applications.Datastores/redisCaches",
+                    "custom",
+                    "bicep",
+                    "ghcr.io/example/custom/redis:latest");
+
+                var container = infra.GetProvisionableResources().OfType<RadiusContainerConstruct>().Single();
+                container.AddConnection("redisStore", "cache");
+            });
+
+        builder.AddRedis("cache");
+        builder.AddContainer("webapi", "mcr.microsoft.com/dotnet/aspnet:8.0");
+
+        var app = builder.Build();
+        await RadiusTestHelper.PublishBeforeStartEventAsync(app);
+
+        var model = app.Services.GetRequiredService<DistributedApplicationModel>();
+        var environment = RadiusTestHelper.GetRadiusEnvironment(model);
+
+        var context = new RadiusBicepPublishingContext(
+            app.Services.GetRequiredService<DistributedApplicationExecutionContext>(),
+            Path.GetTempPath(),
+            NullLogger.Instance);
+
+        var bicep = context.GenerateBicep(model, environment);
+
+        Assert.Contains("ghcr.io/example/custom/redis:latest", bicep);
+        Assert.DoesNotContain("ghcr.io/radius-project/recipes/local-dev/rediscaches:latest", bicep);
+        Assert.Contains("connections:", bicep);
+        Assert.Contains("redisStore:", bicep);
+        Assert.Contains("source: cache.id", bicep);
     }
 
     [Fact]

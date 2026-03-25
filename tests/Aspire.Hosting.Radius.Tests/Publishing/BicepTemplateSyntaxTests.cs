@@ -5,6 +5,7 @@
 
 using Aspire.Hosting.ApplicationModel;
 using Aspire.Hosting.Radius.Publishing;
+using Aspire.Hosting.Radius.Provisioning;
 using Aspire.Hosting.Utils;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -155,12 +156,12 @@ public class BicepTemplateSyntaxTests
     [Fact]
     public void SanitizeName_RemovesInvalidCharacters()
     {
-        Assert.Equal("myresource", BicepTemplateBuilder.SanitizeName("my-resource"));
-        Assert.Equal("myresource", BicepTemplateBuilder.SanitizeName("my.resource"));
-        Assert.Equal("myresource", BicepTemplateBuilder.SanitizeName("my resource"));
-        Assert.Equal("r123", BicepTemplateBuilder.SanitizeName("123"));
-        Assert.Equal("my_resource", BicepTemplateBuilder.SanitizeName("my_resource"));
+        Assert.Equal("myresource", BicepIdentifier.Sanitize("my-resource"));
+        Assert.Equal("myresource", BicepIdentifier.Sanitize("my.resource"));
+        Assert.Equal("myresource", BicepIdentifier.Sanitize("my resource"));
+        Assert.Equal("r123", BicepIdentifier.Sanitize("123"));
+        Assert.Equal("my_resource", BicepIdentifier.Sanitize("my_resource"));
         // "radius" is reserved by the Bicep extension directive
-        Assert.Equal("radiusenv", BicepTemplateBuilder.SanitizeName("radius"));
+        Assert.Equal("radiusenv", BicepIdentifier.Sanitize("radius"));
     }
 }

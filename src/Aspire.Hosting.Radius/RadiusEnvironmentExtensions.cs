@@ -115,4 +115,40 @@ public static class RadiusEnvironmentExtensions
 
         return builder;
     }
+
+    /// <summary>
+    /// Configures the Radius infrastructure AST before it is compiled to Bicep.
+    /// This enables customization of the generated Bicep, similar to how
+    /// <c>ConfigureInfrastructure</c> works for Azure resources.
+    /// </summary>
+    /// <param name="builder">The Radius environment resource builder.</param>
+    /// <param name="configure">
+    /// A delegate that receives the <see cref="Azure.Provisioning.Infrastructure"/> instance
+    /// populated with Radius resource constructs. Use <c>GetProvisionableResources()</c>
+    /// to access and modify individual resources before Bicep compilation.
+    /// </param>
+    /// <returns>A reference to the <see cref="IResourceBuilder{RadiusEnvironmentResource}"/>.</returns>
+    /// <example>
+    /// <code>
+    /// radius.ConfigureRadiusInfrastructure(infra =>
+    /// {
+    ///     var env = infra.GetProvisionableResources()
+    ///         .OfType&lt;RadiusEnvironmentConstruct&gt;()
+    ///         .Single();
+    ///     env.ComputeNamespace = "custom-namespace";
+    /// });
+    /// </code>
+    /// </example>
+    [AspireExportIgnore(Reason = "Radius extension is not yet ATS-compatible")]
+    public static IResourceBuilder<RadiusEnvironmentResource> ConfigureRadiusInfrastructure(
+        this IResourceBuilder<RadiusEnvironmentResource> builder,
+        Action<Azure.Provisioning.Infrastructure> configure)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        ArgumentNullException.ThrowIfNull(configure);
+
+        builder.Resource.ConfigureInfrastructureCallback = configure;
+
+        return builder;
+    }
 }

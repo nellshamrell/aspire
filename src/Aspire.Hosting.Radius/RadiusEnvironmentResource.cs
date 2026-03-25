@@ -38,6 +38,12 @@ public class RadiusEnvironmentResource : Resource, IComputeEnvironmentResource
     internal IResourceBuilder<RadiusDashboardResource>? Dashboard { get; set; }
 
     /// <summary>
+    /// Gets or sets the callback to customize the generated Radius infrastructure AST
+    /// before it is compiled to Bicep. Set via <c>ConfigureRadiusInfrastructure()</c>.
+    /// </summary>
+    internal Action<Azure.Provisioning.Infrastructure>? ConfigureInfrastructureCallback { get; set; }
+
+    /// <summary>
     /// Initializes a new instance of the <see cref="RadiusEnvironmentResource"/> class.
     /// </summary>
     /// <param name="name">The name of the Radius environment.</param>
@@ -81,7 +87,7 @@ public class RadiusEnvironmentResource : Resource, IComputeEnvironmentResource
             context.Logger,
             context.CancellationToken);
 
-        return publishingContext.WriteModelAsync(context.Model, this);
+        return publishingContext.WriteModelAsync(context.Model, this, ConfigureInfrastructureCallback);
     }
 
     /// <inheritdoc />

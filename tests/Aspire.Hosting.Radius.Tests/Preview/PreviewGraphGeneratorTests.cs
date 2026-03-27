@@ -319,4 +319,52 @@ public class PreviewGraphGeneratorTests : IDisposable
         Assert.Single(webapiResource.Connections);
         Assert.Single(cacheResource.Connections);
     }
+
+    [Fact]
+    public async Task GenerateAsync_SqlServerDatabaseChildResource_ResolvesToParentInConnections()
+    {
+        // Arrange: api references SqlServerDatabaseResource ("appdb"), which is a child of
+        // SqlServerServerResource ("sqlserver"). The preview graph should show api → sqlserver,
+        // not api → appdb, because sqlserver is the Radius portable resource.
+        var builder = TestDistributedApplicationBuilder.Create();
+        builder.AddRadiusEnvironment("radius");
+
+        var sqlServerDb = builder.AddSqlServer("sqlserver")
+            .AddDatabase("appdb");
+
+        builder.AddContainer("api", "mcr.microsoft.com/dotnet/aspnet:8.0")
+            .WithReference(sqlServerDb);
+
+        var app = builder.Build();
+        await RadiusTestHelper.PublishBeforeStartEventAsync(app);
+        var model = app.Services.GetRequiredService<DistributedApplicationModel>();
+        var environment = RadiusTestHelper.GetRadiusEnvironment(model);
+
+        var logger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger<PreviewGraphGenerator>();
+        var generator = new PreviewGraphGenerator(logger);
+
+        // Act
+        await generator.GenerateAsync(model, environment, _tempDir);
+
+        var graphJson = await File.ReadAllTextAsync(Path.Combine(_tempDir, "graph.json"));
+        var graph = JsonSerializer.Deserialize<PreviewGraphResponse>(graphJson);
+
+        Assert.NotNull(graph);
+
+        // "appdb" is a child resource — it should NOT appear as a node in the graph
+        Assert.DoesNotContain(graph.Resources, r => r.Name == "appdb");
+
+        var apiResource = graph.Resources.First(r => r.Name == "api");
+        var sqlserverResource = graph.Resources.First(r => r.Name == "sqlserver");
+
+        // api should have outbound connection to sqlserver (the parent portable resource)
+        Assert.Single(apiResource.Connections);
+        Assert.Equal("sqlserver", apiResource.Connections[0].Name);
+        Assert.Equal("Outbound", apiResource.Connections[0].Direction);
+
+        // sqlserver should have inbound connection from api
+        Assert.Single(sqlserverResource.Connections);
+        Assert.Equal("api", sqlserverResource.Connections[0].Name);
+        Assert.Equal("Inbound", sqlserverResource.Connections[0].Direction);
+    }
 }

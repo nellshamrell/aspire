@@ -34,10 +34,26 @@ internal sealed class RadiusInfrastructure(
             logger.LogInformation("Configuring Radius environment '{EnvironmentName}' (namespace: {Namespace}, dashboard: {DashboardEnabled})",
                 environment.Name, environment.Namespace, environment.DashboardEnabled);
 
+            // Add deployment target annotations first so preview generation can see them
+            foreach (var r in @event.Model.GetComputeResources())
+            {
+                // Skip resources that are explicitly targeted to a different compute environment
+                var resourceComputeEnvironment = r.GetComputeEnvironment();
+                if (resourceComputeEnvironment is not null && resourceComputeEnvironment != environment)
+                {
+                    continue;
+                }
+
+                r.Annotations.Add(new DeploymentTargetAnnotation(environment)
+                {
+                    ComputeEnvironment = environment
+                });
+            }
+
             // Register dashboard container in the model if enabled
             if (environment.DashboardEnabled && environment.Dashboard?.Resource is RadiusDashboardResource dashboard)
             {
-                // Generate preview data before starting the dashboard
+                // Generate preview data after annotations are set so the generator finds targeted resources
                 var previewDir = Path.Combine(Path.GetTempPath(), $"radius-preview-{Guid.NewGuid():N}");
                 var generator = new PreviewGraphGenerator(logger);
                 await generator.GenerateAsync(@event.Model, environment, previewDir, cancellationToken).ConfigureAwait(false);
@@ -54,21 +70,6 @@ internal sealed class RadiusInfrastructure(
             else if (!environment.DashboardEnabled)
             {
                 logger.LogInformation("Radius dashboard disabled for environment '{EnvironmentName}'", environment.Name);
-            }
-
-            foreach (var r in @event.Model.GetComputeResources())
-            {
-                // Skip resources that are explicitly targeted to a different compute environment
-                var resourceComputeEnvironment = r.GetComputeEnvironment();
-                if (resourceComputeEnvironment is not null && resourceComputeEnvironment != environment)
-                {
-                    continue;
-                }
-
-                r.Annotations.Add(new DeploymentTargetAnnotation(environment)
-                {
-                    ComputeEnvironment = environment
-                });
             }
         }
     }

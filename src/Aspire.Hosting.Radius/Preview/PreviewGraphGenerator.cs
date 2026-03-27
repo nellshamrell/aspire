@@ -100,7 +100,16 @@ internal sealed class PreviewGraphGenerator(ILogger logger)
             foreach (var refAnnotation in refs)
             {
                 var referencedResource = refAnnotation.Resource;
-                if (!resourceMap.TryGetValue(referencedResource.Name, out var targetPreview))
+                var targetName = referencedResource.Name;
+
+                // If the referenced resource is a child (e.g., SqlServerDatabaseResource),
+                // resolve to the parent which is the actual Radius portable resource
+                if (!resourceMap.ContainsKey(targetName) && referencedResource is IResourceWithParent childResource)
+                {
+                    targetName = childResource.Parent.Name;
+                }
+
+                if (!resourceMap.TryGetValue(targetName, out var targetPreview))
                 {
                     continue;
                 }

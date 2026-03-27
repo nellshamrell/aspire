@@ -149,9 +149,18 @@ internal sealed class RadiusInfrastructureBuilder(ILogger logger)
             {
                 foreach (var refAnnotation in refs)
                 {
-                    if (portableIdentifiers.TryGetValue(refAnnotation.Resource.Name, out var portableId))
+                    var targetName = refAnnotation.Resource.Name;
+
+                    // If the referenced resource is a child (e.g., SqlServerDatabaseResource),
+                    // resolve to the parent which is the actual Radius portable resource
+                    if (!portableIdentifiers.ContainsKey(targetName) && refAnnotation.Resource is IResourceWithParent childResource)
                     {
-                        construct.AddConnection(refAnnotation.Resource.Name, portableId);
+                        targetName = childResource.Parent.Name;
+                    }
+
+                    if (portableIdentifiers.TryGetValue(targetName, out var portableId))
+                    {
+                        construct.AddConnection(targetName, portableId);
                     }
                 }
             }

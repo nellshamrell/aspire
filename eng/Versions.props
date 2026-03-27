@@ -6,8 +6,8 @@
     <PatchVersion>0</PatchVersion>
     <VersionPrefix>$(MajorVersion).$(MinorVersion).$(PatchVersion)</VersionPrefix>
     <PreReleaseVersionLabel>preview.1</PreReleaseVersionLabel>
-    <DefaultTargetFramework>net8.0</DefaultTargetFramework>
-    <AllTargetFrameworks>$(DefaultTargetFramework);net9.0;net10.0</AllTargetFrameworks>
+    <DefaultTargetFramework>net10.0</DefaultTargetFramework>
+    <AllTargetFrameworks>$(DefaultTargetFramework)</AllTargetFrameworks>
     <!-- dotnet versions for running tests -->
     <DotNetRuntimePreviousVersionForTesting>8.0.21</DotNetRuntimePreviousVersionForTesting>
     <DotNetRuntimeCurrentVersionForTesting>9.0.10</DotNetRuntimeCurrentVersionForTesting>

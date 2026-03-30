@@ -1,0 +1,8 @@
+# Aspire.Hosting.Radius project-level overrides
+# Inherits from root .editorconfig
+
+[*.cs]
+
+# Maintain consistency with Aspire conventions
+dotnet_diagnostic.CA1054.severity = suggestion
+dotnet_diagnostic.CA1056.severity = suggestion

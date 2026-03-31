@@ -1,6 +1,7 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+using System.Net.Sockets;
 using Aspire.Hosting.ApplicationModel;
 using Aspire.Hosting.Eventing;
 using Aspire.Hosting.Lifecycle;
@@ -13,7 +14,8 @@ namespace Aspire.Hosting;
 /// and optionally start the dashboard container.
 /// </summary>
 internal sealed class RadiusInfrastructure(
-    ILogger<RadiusInfrastructure> logger) : IDistributedApplicationEventingSubscriber
+    ILogger<RadiusInfrastructure> logger,
+    DistributedApplicationExecutionContext executionContext) : IDistributedApplicationEventingSubscriber
 {
     /// <inheritdoc />
     public Task SubscribeAsync(
@@ -44,9 +46,9 @@ internal sealed class RadiusInfrastructure(
                 environment.Namespace,
                 environment.DashboardEnabled ? "enabled" : "disabled");
 
+            // Attach DeploymentTargetAnnotation to all untargeted compute resources
             foreach (var resource in @event.Model.GetComputeResources())
             {
-                // Skip resources already targeted to a different compute environment
                 var existingEnv = resource.Annotations
                     .OfType<DeploymentTargetAnnotation>()
                     .FirstOrDefault()?.ComputeEnvironment;
@@ -61,8 +63,56 @@ internal sealed class RadiusInfrastructure(
                     ComputeEnvironment = environment
                 });
             }
+
+            // Create dashboard container when enabled and running in run mode
+            if (environment.DashboardEnabled && executionContext.IsRunMode)
+            {
+                try
+                {
+                    AddDashboardResource(@event.Model, environment);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex,
+                        "Failed to create Radius dashboard container for environment '{Name}'. " +
+                        "Development will continue without the dashboard.",
+                        environment.Name);
+                }
+            }
         }
 
         return Task.CompletedTask;
+    }
+
+    private void AddDashboardResource(DistributedApplicationModel model, RadiusEnvironmentResource environment)
+    {
+        var dashboardName = $"{environment.Name}-dashboard";
+        var dashboard = new RadiusDashboardResource(dashboardName);
+
+        dashboard.Annotations.Add(new ContainerImageAnnotation
+        {
+            Image = RadiusDashboardResource.DefaultImage,
+            Tag = RadiusDashboardResource.DefaultTag
+        });
+
+        dashboard.Annotations.Add(new EndpointAnnotation(
+            ProtocolType.Tcp,
+            uriScheme: "http",
+            transport: "http",
+            name: "http",
+            port: RadiusDashboardResource.DefaultPort,
+            targetPort: RadiusDashboardResource.DefaultPort));
+
+        var endpointAnnotation = dashboard.Annotations
+            .OfType<EndpointAnnotation>()
+            .First();
+        environment.DashboardEndpoint = new EndpointReference(dashboard, endpointAnnotation);
+
+        model.Resources.Add(dashboard);
+
+        logger.LogInformation(
+            "Radius dashboard '{DashboardName}' will be available on port {Port}",
+            dashboardName,
+            RadiusDashboardResource.DefaultPort);
     }
 }

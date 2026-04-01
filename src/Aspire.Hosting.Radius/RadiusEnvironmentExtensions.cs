@@ -3,6 +3,15 @@
 
 using Aspire.Hosting.ApplicationModel;
 using Aspire.Hosting.Lifecycle;
+using Aspire.Hosting.Pipelines;
+using Aspire.Hosting.Radius.Deployment;
+using Aspire.Hosting.Radius.Provisioning;
+using Aspire.Hosting.Radius.Publishing;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+
+#pragma warning disable ASPIREPIPELINES001
+#pragma warning disable ASPIREPIPELINES004
 
 namespace Aspire.Hosting;
 
@@ -39,7 +48,57 @@ public static class RadiusEnvironmentExtensions
 
         var resource = new RadiusEnvironmentResource(name);
 
-        return builder.AddResource(resource);
+        var resourceBuilder = builder.AddResource(resource);
+
+        // Register the Radius Bicep publishing pipeline step
+        resource.Annotations.Add(new PipelineStepAnnotation(context =>
+        {
+            var step = new PipelineStep
+            {
+                Name = $"publish-radius-{name}",
+                Description = $"Generate Radius Bicep template for environment '{name}'",
+                Resource = context.Resource,
+                Action = async stepContext =>
+                {
+                    var logger = stepContext.Services.GetRequiredService<ILoggerFactory>()
+                        .CreateLogger<RadiusBicepPublishingContext>();
+
+                    var publishingContext = new RadiusBicepPublishingContext(stepContext.Model, logger);
+                    var bicep = await publishingContext.GenerateBicepAsync().ConfigureAwait(false);
+                    var bicepConfig = RadiusBicepPublishingContext.GenerateBicepConfig();
+
+                    var outputService = stepContext.Services.GetRequiredService<IPipelineOutputService>();
+                    var outputDir = outputService.GetOutputDirectory();
+
+                    Directory.CreateDirectory(outputDir);
+
+                    var bicepPath = Path.Combine(outputDir, "app.bicep");
+                    var configPath = Path.Combine(outputDir, "bicepconfig.json");
+
+                    await File.WriteAllTextAsync(bicepPath, bicep, stepContext.CancellationToken).ConfigureAwait(false);
+                    await File.WriteAllTextAsync(configPath, bicepConfig, stepContext.CancellationToken).ConfigureAwait(false);
+
+                    stepContext.Logger.LogInformation("Radius Bicep template written to {BicepPath}", bicepPath);
+                    stepContext.Summary.Add("📄 Radius Bicep", bicepPath);
+                }
+            };
+
+            step.DependsOn(WellKnownPipelineSteps.PublishPrereq);
+            step.RequiredBy(WellKnownPipelineSteps.Publish);
+
+            return step;
+        }));
+
+        // Register the Radius deployment pipeline step (runs after publish + push)
+        var publishStepName = $"publish-radius-{name}";
+        resource.Annotations.Add(new PipelineStepAnnotation(context =>
+        {
+            var deployStep = RadiusDeploymentPipelineStep.Create(name, publishStepName);
+            deployStep.Resource = context.Resource;
+            return deployStep;
+        }));
+
+        return resourceBuilder;
     }
 
     /// <summary>
@@ -97,6 +156,25 @@ public static class RadiusEnvironmentExtensions
         var customization = new RadiusResourceCustomization();
         configure(customization);
         builder.Resource.Annotations.Add(new RadiusResourceCustomizationAnnotation(customization));
+        return builder;
+    }
+
+    /// <summary>
+    /// Configures the Radius infrastructure AST before Bicep compilation.
+    /// Follows Aspire's <c>ConfigureInfrastructure</c> pattern for consistency.
+    /// </summary>
+    /// <param name="builder">The resource builder for the Radius environment.</param>
+    /// <param name="configure">An action to customize the infrastructure options before Bicep compilation.</param>
+    /// <returns>The resource builder for chaining.</returns>
+    [AspireExportIgnore(Reason = "Radius-specific extension — not ATS-compatible.")]
+    public static IResourceBuilder<RadiusEnvironmentResource> ConfigureRadiusInfrastructure(
+        this IResourceBuilder<RadiusEnvironmentResource> builder,
+        Action<RadiusInfrastructureOptions> configure)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        ArgumentNullException.ThrowIfNull(configure);
+
+        builder.Resource.Annotations.Add(new RadiusInfrastructureConfigurationAnnotation(configure));
         return builder;
     }
 }

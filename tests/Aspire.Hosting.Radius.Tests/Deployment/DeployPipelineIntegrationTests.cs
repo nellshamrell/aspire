@@ -61,11 +61,11 @@ public class DeployPipelineIntegrationTests
     }
 
     [Fact]
-    public void DeployStep_DependsOnPush()
+    public void DeployStep_DoesNotDependOnPush()
     {
         var deployStep = RadiusDeploymentPipelineStep.Create("test", "publish-radius-test");
 
-        Assert.Contains(WellKnownPipelineSteps.Push, deployStep.DependsOnSteps);
+        Assert.DoesNotContain(WellKnownPipelineSteps.Push, deployStep.DependsOnSteps);
     }
 
     [Fact]

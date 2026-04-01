@@ -6,22 +6,28 @@ namespace Aspire.Hosting.Radius.Provisioning;
 /// <summary>
 /// Represents a Radius <c>Applications.Core/containers</c> resource (workload) in the Bicep AST.
 /// </summary>
-internal sealed class RadiusContainerConstruct
+public sealed class RadiusContainerConstruct
 {
-    public required string BicepIdentifier { get; init; }
+    /// <summary>
+    /// Gets or sets the Bicep identifier for the container resource.
+    /// </summary>
+    public required string BicepIdentifier { get; set; }
 
-    public required string Name { get; init; }
+    /// <summary>
+    /// Gets or sets the Radius container resource name.
+    /// </summary>
+    public required string Name { get; set; }
 
     /// <summary>
     /// The Bicep identifier of the application resource.
     /// Used to generate <c>application: {appIdentifier}.id</c>.
     /// </summary>
-    public required string ApplicationIdentifier { get; init; }
+    public required string ApplicationIdentifier { get; set; }
 
     /// <summary>
     /// The container image reference (e.g., "myregistry.azurecr.io/api:latest").
     /// </summary>
-    public required string Image { get; init; }
+    public required string Image { get; set; }
 
     /// <summary>
     /// Connections to portable resources.
@@ -29,7 +35,13 @@ internal sealed class RadiusContainerConstruct
     /// </summary>
     public Dictionary<string, string> Connections { get; } = new();
 
+    /// <summary>
+    /// Gets the Radius resource type emitted for container constructs.
+    /// </summary>
     public static string ResourceType => "Applications.Core/containers";
 
+    /// <summary>
+    /// Gets the API version emitted for container constructs.
+    /// </summary>
     public static string ApiVersion => RadiusInfrastructureBuilder.RadiusApiVersion;
 }

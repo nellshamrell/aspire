@@ -77,6 +77,13 @@ internal sealed class RadiusInfrastructureBuilder
     /// </summary>
     public void Build()
     {
+        _environments.Clear();
+        _applications.Clear();
+        _portableResources.Clear();
+        _containers.Clear();
+        _portableIdentifiers.Clear();
+        _allIdentifiers.Clear();
+
         var radiusEnvironments = _model.Resources
             .OfType<RadiusEnvironmentResource>()
             .ToArray();
@@ -88,7 +95,7 @@ internal sealed class RadiusInfrastructureBuilder
         }
 
         // Build environment constructs
-        foreach (var env in radiusEnvironments)
+        foreach (var (env, index) in radiusEnvironments.Select((environment, index) => (environment, index)))
         {
             var envId = BicepIdentifier.Sanitize(env.Name);
             _allIdentifiers[env.Name] = envId;
@@ -113,7 +120,7 @@ internal sealed class RadiusInfrastructureBuilder
             };
 
             // Classify resources
-            ClassifyResources(envConstruct, appConstruct);
+            ClassifyResources(envConstruct, appConstruct, env, index == 0);
 
             _environments.Add(envConstruct);
             _applications.Add(appConstruct);
@@ -165,7 +172,9 @@ internal sealed class RadiusInfrastructureBuilder
 
     private void ClassifyResources(
         RadiusEnvironmentConstruct envConstruct,
-        RadiusApplicationConstruct appConstruct)
+        RadiusApplicationConstruct appConstruct,
+        RadiusEnvironmentResource environment,
+        bool isDefaultEnvironment)
     {
         foreach (var resource in _model.Resources)
         {
@@ -181,9 +190,18 @@ internal sealed class RadiusInfrastructureBuilder
                 continue;
             }
 
+            if (!ShouldIncludeInEnvironment(resource, environment, isDefaultEnvironment))
+            {
+                continue;
+            }
+
             var mapping = ResourceTypeMapper.GetRadiusType(resource, _logger);
 
-            if (mapping.Type == "Applications.Core/containers")
+            if (mapping.IsManualProvisioning)
+            {
+                ClassifyAsPortableResource(resource, mapping, envConstruct, appConstruct.BicepIdentifier);
+            }
+            else if (mapping.Type == "Applications.Core/containers")
             {
                 // Workload container (ContainerResource, ProjectResource, or fallback)
                 ClassifyAsContainer(resource, appConstruct.BicepIdentifier);
@@ -194,6 +212,37 @@ internal sealed class RadiusInfrastructureBuilder
                 ClassifyAsPortableResource(resource, mapping, envConstruct, appConstruct.BicepIdentifier);
             }
         }
+    }
+
+    private static bool ShouldIncludeInEnvironment(
+        IResource resource,
+        RadiusEnvironmentResource environment,
+        bool isDefaultEnvironment)
+    {
+        if (TryGetBoundComputeEnvironment(resource) is { } boundEnvironment)
+        {
+            return ReferenceEquals(boundEnvironment, environment);
+        }
+
+        var deploymentTargets = resource.Annotations
+            .OfType<DeploymentTargetAnnotation>()
+            .Where(annotation => annotation.ComputeEnvironment is not null)
+            .ToArray();
+
+        if (deploymentTargets.Length > 0)
+        {
+            return deploymentTargets.Any(annotation => ReferenceEquals(annotation.ComputeEnvironment, environment));
+        }
+
+        return isDefaultEnvironment;
+    }
+
+    private static IComputeEnvironmentResource? TryGetBoundComputeEnvironment(IResource resource)
+    {
+        var annotation = resource.Annotations.FirstOrDefault(a => string.Equals(a.GetType().Name, "ComputeEnvironmentAnnotation", StringComparison.Ordinal));
+        var computeEnvironmentProperty = annotation?.GetType().GetProperty("ComputeEnvironment");
+
+        return computeEnvironmentProperty?.GetValue(annotation) as IComputeEnvironmentResource;
     }
 
     private void ClassifyAsPortableResource(
@@ -226,6 +275,8 @@ internal sealed class RadiusInfrastructureBuilder
             customRecipeTemplatePath = customization.Recipe.TemplatePath;
         }
 
+        var customRecipeName = customization?.Recipe?.Name;
+
         var construct = new RadiusPortableResourceConstruct
         {
             BicepIdentifier = resourceId,
@@ -236,6 +287,7 @@ internal sealed class RadiusInfrastructureBuilder
             IsManualProvisioning = isManual,
             ManualHost = isManual ? customization?.Host : null,
             ManualPort = isManual ? customization?.Port : null,
+            RecipeName = customRecipeName,
         };
 
         _portableResources.Add(construct);
@@ -444,6 +496,13 @@ internal sealed class RadiusInfrastructureBuilder
             }
         }
 
+        if (portable.RecipeName is not null)
+        {
+            sb.AppendLine("    recipe: {");
+            sb.AppendLine($"      name: '{portable.RecipeName}'");
+            sb.AppendLine("    }");
+        }
+
         sb.AppendLine("  }");
         sb.AppendLine("}");
     }
@@ -464,7 +523,7 @@ internal sealed class RadiusInfrastructureBuilder
             sb.AppendLine("    connections: {");
             foreach (var (connName, portableId) in container.Connections)
             {
-                sb.AppendLine($"      {connName}: {{");
+                sb.AppendLine($"      '{connName}': {{");
                 sb.AppendLine($"        source: {portableId}.id");
                 sb.AppendLine("      }");
             }

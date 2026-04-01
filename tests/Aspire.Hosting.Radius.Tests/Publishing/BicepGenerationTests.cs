@@ -7,6 +7,7 @@ using Aspire.Hosting.ApplicationModel;
 using Aspire.Hosting.Radius.Publishing;
 using Aspire.Hosting.Utils;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 namespace Aspire.Hosting.Radius.Tests.Publishing;
 
@@ -179,5 +180,97 @@ public class BicepGenerationTests
         // Performance budget: <500ms per resource (20 resources ≤ 10 seconds)
         // Mapping should be essentially instant — well under budget
         Assert.True(sw.ElapsedMilliseconds < 10000, $"Mapping 20 resources took {sw.ElapsedMilliseconds}ms (budget: 10000ms)");
+    }
+
+    [Fact]
+    public async Task ManualPostgres_BicepUsesPortableResourceWithManualProvisioning()
+    {
+        using var builder = TestDistributedApplicationBuilder.Create();
+        builder.AddRadiusEnvironment("radius");
+        var postgres = builder.AddPostgres("postgres");
+        builder.Resources.OfType<PostgresServerResource>().First()
+            .Annotations.Add(new RadiusResourceCustomizationAnnotation(
+                new RadiusResourceCustomization
+                {
+                    Provisioning = RadiusResourceProvisioning.Manual,
+                    Host = "postgres.example.com",
+                    Port = 5432
+                }));
+        builder.AddContainer("api", "myimage", "latest")
+            .WithReference(postgres);
+
+        var app = builder.Build();
+        var model = app.Services.GetRequiredService<DistributedApplicationModel>();
+        var loggerFactory = app.Services.GetRequiredService<ILoggerFactory>();
+        var publishingContext = new RadiusBicepPublishingContext(
+            model,
+            loggerFactory.CreateLogger<RadiusBicepPublishingContext>());
+
+        var bicep = await publishingContext.GenerateBicepAsync();
+
+        Assert.Contains("resource postgres 'Applications.Datastores/postgresDatabases@2023-10-01-preview' = {", bicep);
+        Assert.Contains("resourceProvisioning: 'manual'", bicep);
+        Assert.Contains("host: 'postgres.example.com'", bicep);
+        Assert.Contains("port: 5432", bicep);
+        Assert.DoesNotContain("resource postgres 'Applications.Core/containers", bicep);
+    }
+
+    [Fact]
+    public async Task MultipleEnvironments_DefaultResourcesOnlyPublishToFirstEnvironment()
+    {
+        using var builder = TestDistributedApplicationBuilder.Create();
+        builder.AddRadiusEnvironment("radius-first")
+            .WithRadiusNamespace("first");
+        builder.AddRadiusEnvironment("radius-second")
+            .WithRadiusNamespace("second");
+        builder.AddContainer("api", "myimage", "latest");
+
+        var app = builder.Build();
+        var model = app.Services.GetRequiredService<DistributedApplicationModel>();
+        var loggerFactory = app.Services.GetRequiredService<ILoggerFactory>();
+        var publishingContext = new RadiusBicepPublishingContext(
+            model,
+            loggerFactory.CreateLogger<RadiusBicepPublishingContext>());
+
+        var bicep = await publishingContext.GenerateBicepAsync();
+
+        Assert.Equal(1, CountOccurrences(bicep, "resource api 'Applications.Core/containers@2023-10-01-preview' = {"));
+        Assert.Contains("application: radius_first_app.id", bicep);
+        Assert.DoesNotContain("application: radius_second_app.id", bicep);
+    }
+
+    [Fact]
+    public async Task ConnectionsBlock_QuotesHyphenatedConnectionNames()
+    {
+        using var builder = TestDistributedApplicationBuilder.Create();
+        builder.AddRadiusEnvironment("radius");
+        var cache = builder.AddRedis("cache-name");
+        builder.AddContainer("api", "myimage", "latest")
+            .WithReference(cache);
+
+        var app = builder.Build();
+        var model = app.Services.GetRequiredService<DistributedApplicationModel>();
+        var loggerFactory = app.Services.GetRequiredService<ILoggerFactory>();
+        var publishingContext = new RadiusBicepPublishingContext(
+            model,
+            loggerFactory.CreateLogger<RadiusBicepPublishingContext>());
+
+        var bicep = await publishingContext.GenerateBicepAsync();
+
+        Assert.Contains("'cache-name': {", bicep);
+    }
+
+    private static int CountOccurrences(string input, string value)
+    {
+        var count = 0;
+        var index = 0;
+
+        while ((index = input.IndexOf(value, index, StringComparison.Ordinal)) >= 0)
+        {
+            count++;
+            index += value.Length;
+        }
+
+        return count;
     }
 }

@@ -13,6 +13,11 @@ namespace Aspire.Hosting.Radius.Publishing;
 internal static class ResourceTypeMapper
 {
     /// <summary>
+    /// The Radius portable resource type used for PostgreSQL databases.
+    /// </summary>
+    public const string PostgresPortableResourceType = "Applications.Datastores/postgresDatabases";
+
+    /// <summary>
     /// The Radius API version used for all resource types.
     /// </summary>
     public const string RadiusApiVersion = "2023-10-01";
@@ -68,7 +73,7 @@ internal static class ResourceTypeMapper
         {
             return new ResourceMapping
             {
-                Type = "Applications.Core/containers",
+                Type = PostgresPortableResourceType,
                 ApiVersion = RadiusApiVersion,
                 IsManualProvisioning = true
             };

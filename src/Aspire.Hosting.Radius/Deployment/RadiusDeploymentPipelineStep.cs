@@ -33,18 +33,19 @@ internal static class RadiusDeploymentPipelineStep
         {
             Name = $"deploy-radius-{environmentName}",
             Description = $"Deploy Radius application for environment '{environmentName}' using rad CLI",
-            Action = ExecuteAsync,
+            Action = context => ExecuteAsync(context, environmentName),
         };
 
-        // Deploy after publish (which generates the Bicep), after build+push (images must be ready)
+        // Deploy after publish (which generates the Bicep).
+        // For kind/local clusters, images are loaded via `kind load` — no registry push needed.
+        // When a registry is configured, push steps are added separately via the pipeline.
         step.DependsOn(publishStepName);
-        step.DependsOn(WellKnownPipelineSteps.Push);
         step.RequiredBy(WellKnownPipelineSteps.Deploy);
 
         return step;
     }
 
-    private static async Task ExecuteAsync(PipelineStepContext context)
+    private static async Task ExecuteAsync(PipelineStepContext context, string environmentName)
     {
         var logger = context.Services.GetRequiredService<ILoggerFactory>()
             .CreateLogger(typeof(RadiusDeploymentPipelineStep));
@@ -60,8 +61,14 @@ internal static class RadiusDeploymentPipelineStep
         logger.LogInformation("Using rad CLI at {RadPath}", radPath);
 
         // 2. Locate the Bicep file in the publish output directory
+        var environment = context.Model.Resources
+            .OfType<RadiusEnvironmentResource>()
+            .FirstOrDefault(env => string.Equals(env.Name, environmentName, StringComparison.Ordinal));
+
         var outputService = context.Services.GetRequiredService<IPipelineOutputService>();
-        var outputDir = outputService.GetOutputDirectory();
+        var outputDir = environment is not null && context.Model.Resources.OfType<IComputeEnvironmentResource>().Count() > 1
+            ? outputService.GetOutputDirectory(environment)
+            : outputService.GetOutputDirectory();
         var bicepPath = Path.Combine(outputDir, "app.bicep");
 
         if (!File.Exists(bicepPath))
@@ -72,13 +79,9 @@ internal static class RadiusDeploymentPipelineStep
         }
 
         // 3. Execute rad deploy
-        var env = context.Model.Resources
-            .OfType<RadiusEnvironmentResource>()
-            .FirstOrDefault();
-
         logger.LogInformation(
             "Starting Radius deployment for environment '{EnvironmentName}'",
-            env?.Name ?? "radius");
+            environment?.Name ?? environmentName);
 
         logger.LogInformation("Executing: rad {Command}", RadCliHelper.ConstructDeployCommand(bicepPath));
 
@@ -104,7 +107,7 @@ internal static class RadiusDeploymentPipelineStep
 
         logger.LogInformation(
             "Radius deployment completed for environment '{EnvironmentName}'",
-            env?.Name ?? "radius");
+            environment?.Name ?? environmentName);
 
         context.Summary.Add("🚀 Radius Deploy", $"Deployed via rad CLI ({bicepPath})");
     }

@@ -68,7 +68,9 @@ public static class RadiusEnvironmentExtensions
                     var bicepConfig = RadiusBicepPublishingContext.GenerateBicepConfig();
 
                     var outputService = stepContext.Services.GetRequiredService<IPipelineOutputService>();
-                    var outputDir = outputService.GetOutputDirectory();
+                    var outputDir = stepContext.Model.Resources.OfType<IComputeEnvironmentResource>().Count() > 1
+                        ? outputService.GetOutputDirectory(resource)
+                        : outputService.GetOutputDirectory();
 
                     Directory.CreateDirectory(outputDir);
 

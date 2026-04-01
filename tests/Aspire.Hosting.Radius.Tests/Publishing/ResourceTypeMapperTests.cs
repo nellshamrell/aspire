@@ -78,6 +78,7 @@ public class ResourceTypeMapperTests
         var mapping = ResourceTypeMapper.GetRadiusType(resource);
 
         Assert.True(mapping.IsManualProvisioning);
+        Assert.Equal(ResourceTypeMapper.PostgresPortableResourceType, mapping.Type);
         Assert.Equal("2023-10-01", mapping.ApiVersion);
     }
 

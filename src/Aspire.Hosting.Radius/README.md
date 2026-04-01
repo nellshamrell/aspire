@@ -65,7 +65,7 @@ Configures the Radius infrastructure before Bicep compilation. Follows Aspire's 
 builder.AddRadiusEnvironment("radius")
     .ConfigureRadiusInfrastructure(options =>
     {
-        // Customize the infrastructure builder before Bicep compilation
+        options.Environments[0].ComputeNamespace = "custom-namespace";
     });
 ```
 
@@ -129,7 +129,7 @@ Aspire resource types are automatically mapped to Radius portable resources:
 | `RabbitMQServerResource` | `Applications.Messaging/rabbitMQQueues` |
 | `DaprStateStoreResource` | `Applications.Dapr/stateStores` |
 | `DaprPubSubResource` | `Applications.Dapr/pubSubBrokers` |
-| `PostgresServerResource` | Manual provisioning (no native Radius type) |
+| `PostgresServerResource` | `Applications.Datastores/postgresDatabases` (manual provisioning) |
 | `ContainerResource` | `Applications.Core/containers` |
 | `ProjectResource` | `Applications.Core/containers` |
 | Unmapped types | `Applications.Core/containers` (fallback with warning) |

@@ -4,7 +4,10 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using Aspire.Hosting.ApplicationModel;
+using Aspire.Hosting.Radius.Publishing;
 using Aspire.Hosting.Utils;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 namespace Aspire.Hosting.Radius.Tests;
 
@@ -148,4 +151,36 @@ public class RadiusEnvironmentExtensionsTests
         Assert.NotNull(annotation.Customization.Recipe);
         Assert.Equal("custom-recipe", annotation.Customization.Recipe.Name);
     }
+
+    [Fact]
+    public async Task ConfigureRadiusInfrastructure_CanMutateGeneratedConstructs()
+    {
+        using var builder = TestDistributedApplicationBuilder.Create();
+        builder.AddRadiusEnvironment("radius")
+            .ConfigureRadiusInfrastructure(options =>
+            {
+                var environment = Assert.Single(options.Environments);
+                environment.ComputeNamespace = "custom-namespace";
+            });
+
+        var app = builder.Build();
+        await ExecuteBeforeStartHooksAsync(app, default);
+
+        var model = app.Services.GetRequiredService<DistributedApplicationModel>();
+        var loggerFactory = app.Services.GetRequiredService<ILoggerFactory>();
+        var publishingContext = new RadiusBicepPublishingContext(
+            model,
+            loggerFactory.CreateLogger<RadiusBicepPublishingContext>());
+
+        var bicep = await publishingContext.GenerateBicepAsync();
+
+        Assert.Contains("namespace: 'custom-namespace'", bicep);
+    }
+
+    [System.Runtime.CompilerServices.UnsafeAccessor(
+        System.Runtime.CompilerServices.UnsafeAccessorKind.Method,
+        Name = "ExecuteBeforeStartHooksAsync")]
+    private static extern Task ExecuteBeforeStartHooksAsync(
+        DistributedApplication app,
+        CancellationToken cancellationToken);
 }

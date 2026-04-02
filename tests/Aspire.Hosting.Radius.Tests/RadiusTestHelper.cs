@@ -2,6 +2,8 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using Aspire.Hosting.ApplicationModel;
+using Aspire.Hosting.Eventing;
+using Aspire.Hosting.Lifecycle;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Aspire.Hosting.Radius.Tests;
@@ -22,6 +24,29 @@ public static class RadiusTestHelper
         var app = builder.Build();
         var model = app.Services.GetRequiredService<DistributedApplicationModel>();
         return (app, model);
+    }
+
+    /// <summary>
+    /// Triggers the RadiusInfrastructure subscriber's BeforeStartEvent handler in isolation,
+    /// without firing other Aspire built-in handlers that require DCP/dashboard paths.
+    /// </summary>
+    public static async Task PublishBeforeStartEventAsync(DistributedApplication app)
+    {
+        var appModel = app.Services.GetRequiredService<DistributedApplicationModel>();
+        var execContext = app.Services.GetRequiredService<DistributedApplicationExecutionContext>();
+
+        // Create an isolated eventing instance so built-in Aspire handlers
+        // (e.g., InitializeDcpAnnotations) are not triggered.
+        var isolatedEventing = new DistributedApplicationEventing();
+
+        // Only activate Radius-related subscribers
+        var subscribers = app.Services.GetServices<IDistributedApplicationEventingSubscriber>();
+        foreach (var subscriber in subscribers.Where(s => s is RadiusInfrastructure))
+        {
+            await subscriber.SubscribeAsync(isolatedEventing, execContext, CancellationToken.None);
+        }
+
+        await isolatedEventing.PublishAsync(new BeforeStartEvent(app.Services, appModel), CancellationToken.None);
     }
 
     /// <summary>

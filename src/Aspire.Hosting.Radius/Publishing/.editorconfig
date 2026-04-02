@@ -1,0 +1,6 @@
+# Publishing directory editor config
+# Bicep generation code uses string-only interpolation (identifiers, names)
+# with no locale-sensitive numeric or date formatting.
+
+[*.{cs,vb}]
+dotnet_diagnostic.CA1305.severity = suggestion

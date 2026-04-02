@@ -1,0 +1,6 @@
+# Aspire.Hosting.Radius editor config
+# Inherits all rules from root .editorconfig
+
+[*.{cs,vb}]
+# CA2007: Consider calling ConfigureAwait on the awaited task
+dotnet_diagnostic.CA2007.severity = warning

@@ -43,13 +43,9 @@ internal static class ResourceTypeMapper
     /// </summary>
     public static ResourceMapping GetRadiusMapping(IResource resource, ILogger? logger = null)
     {
-        // Container and project resources are always workload containers
-        if (resource is ContainerResource || resource is ProjectResource)
-        {
-            return s_containerMapping;
-        }
-
-        // Try exact type name match first
+        // Try exact type name match first — this catches portable resources
+        // (Redis, SqlServer, etc.) that extend ContainerResource but should
+        // be mapped to their specific Radius portable resource types.
         var typeName = resource.GetType().Name;
         if (s_mappingsByTypeName.TryGetValue(typeName, out var mapping))
         {
@@ -65,6 +61,12 @@ internal static class ResourceTypeMapper
                 return baseMapping;
             }
             baseType = baseType.BaseType;
+        }
+
+        // Container and project resources are workload containers
+        if (resource is ContainerResource || resource is ProjectResource)
+        {
+            return s_containerMapping;
         }
 
         // Fallback: treat as container with warning

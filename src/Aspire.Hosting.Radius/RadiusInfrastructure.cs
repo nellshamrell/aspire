@@ -6,6 +6,8 @@ using Aspire.Hosting.Eventing;
 using Aspire.Hosting.Lifecycle;
 using Microsoft.Extensions.Logging;
 
+using Aspire.Hosting.Radius.Preview;
+
 namespace Aspire.Hosting.Radius;
 
 /// <summary>
@@ -21,7 +23,7 @@ internal sealed class RadiusInfrastructure(ILogger<RadiusInfrastructure> logger)
         return Task.CompletedTask;
     }
 
-    private Task OnBeforeStartAsync(BeforeStartEvent @event, CancellationToken cancellationToken)
+    private async Task OnBeforeStartAsync(BeforeStartEvent @event, CancellationToken cancellationToken)
     {
         var model = @event.Model;
 
@@ -29,7 +31,7 @@ internal sealed class RadiusInfrastructure(ILogger<RadiusInfrastructure> logger)
 
         if (radiusEnvironments.Count == 0)
         {
-            return Task.CompletedTask;
+            return;
         }
 
         foreach (var radiusEnv in radiusEnvironments)
@@ -40,22 +42,51 @@ internal sealed class RadiusInfrastructure(ILogger<RadiusInfrastructure> logger)
                 radiusEnv.Namespace,
                 radiusEnv.DashboardEnabled);
 
+            // Attach DeploymentTargetAnnotation to all compute resources FIRST
+            // so the preview generator can filter by annotation.
             AttachDeploymentTargetAnnotations(model, radiusEnv);
+
+            RadiusDashboardResource? dashboard = null;
 
             if (radiusEnv.DashboardEnabled)
             {
                 try
                 {
-                    AddDashboardResource(model, radiusEnv);
+                    dashboard = AddDashboardResource(model, radiusEnv);
                 }
                 catch (Exception ex)
                 {
                     logger.LogWarning(ex, "Failed to create Radius dashboard container for environment '{EnvironmentName}'. Continuing without dashboard.", radiusEnv.EnvironmentName);
                 }
             }
-        }
 
-        return Task.CompletedTask;
+            // Generate preview data and configure dashboard bind mount
+            if (dashboard is not null)
+            {
+                try
+                {
+                    var previewDir = Path.Combine(Path.GetTempPath(), $"radius-preview-{Guid.NewGuid():N}");
+                    var generator = new PreviewGraphGenerator(logger);
+                    await generator.GenerateAsync(model, radiusEnv, previewDir).ConfigureAwait(false);
+
+                    // Add bind mount from temp dir to /app/preview/ in dashboard container
+                    dashboard.Annotations.Add(new ContainerMountAnnotation(
+                        previewDir, "/app/preview", ContainerMountType.BindMount, isReadOnly: true));
+
+                    // Set RADIUS_PREVIEW_MODE env var on dashboard container
+                    dashboard.Annotations.Add(new EnvironmentCallbackAnnotation(
+                        "RADIUS_PREVIEW_MODE", () => "true"));
+
+                    logger.LogInformation(
+                        "Preview data generated and mounted at /app/preview in dashboard container '{DashboardName}'",
+                        dashboard.Name);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex, "Failed to generate preview data for environment '{EnvironmentName}'. Dashboard will run without preview.", radiusEnv.EnvironmentName);
+                }
+            }
+        }
     }
 
     private void AttachDeploymentTargetAnnotations(DistributedApplicationModel model, RadiusEnvironmentResource radiusEnv)
@@ -97,14 +128,14 @@ internal sealed class RadiusInfrastructure(ILogger<RadiusInfrastructure> logger)
         }
     }
 
-    private static void AddDashboardResource(DistributedApplicationModel model, RadiusEnvironmentResource radiusEnv)
+    private static RadiusDashboardResource? AddDashboardResource(DistributedApplicationModel model, RadiusEnvironmentResource radiusEnv)
     {
         var dashboardName = $"{radiusEnv.Name}-dashboard";
 
         // Don't add if a dashboard for this environment already exists
         if (model.Resources.OfType<RadiusDashboardResource>().Any(r => r.Name == dashboardName))
         {
-            return;
+            return model.Resources.OfType<RadiusDashboardResource>().First(r => r.Name == dashboardName);
         }
 
         var dashboard = new RadiusDashboardResource(dashboardName);
@@ -129,5 +160,7 @@ internal sealed class RadiusInfrastructure(ILogger<RadiusInfrastructure> logger)
 
         // Set the endpoint reference on the environment resource
         radiusEnv.DashboardEndpoint = new EndpointReference(dashboard, "http");
+
+        return dashboard;
     }
 }

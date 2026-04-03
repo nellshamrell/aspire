@@ -68,6 +68,13 @@ internal sealed class RadiusInfrastructure(ILogger<RadiusInfrastructure> logger)
                 continue;
             }
 
+            // Skip resources explicitly targeted to a different compute environment
+            var resourceComputeEnvironment = resource.GetComputeEnvironment();
+            if (resourceComputeEnvironment is not null && resourceComputeEnvironment != radiusEnv)
+            {
+                continue;
+            }
+
             // Only attach if the resource doesn't already have a DeploymentTargetAnnotation
             // pointing to this Radius environment
             var existingAnnotations = resource.Annotations.OfType<DeploymentTargetAnnotation>();

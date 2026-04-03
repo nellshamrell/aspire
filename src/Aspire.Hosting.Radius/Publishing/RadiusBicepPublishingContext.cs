@@ -15,34 +15,41 @@ internal sealed class RadiusBicepPublishingContext
     private readonly DistributedApplicationModel _model;
     private readonly ILogger _logger;
     private readonly Action<RadiusInfrastructureOptions>? _configureCallback;
+    private readonly RadiusEnvironmentResource? _targetEnvironment;
 
     public RadiusBicepPublishingContext(
         DistributedApplicationModel model,
         ILogger logger,
-        Action<RadiusInfrastructureOptions>? configureCallback = null)
+        Action<RadiusInfrastructureOptions>? configureCallback = null,
+        RadiusEnvironmentResource? targetEnvironment = null)
     {
         _model = model;
         _logger = logger;
         _configureCallback = configureCallback;
+        _targetEnvironment = targetEnvironment;
     }
 
     /// <summary>
-    /// Generates the Bicep template as a string for all Radius environments.
-    /// For single environment, returns a single Bicep string.
-    /// For multiple environments, returns a dictionary keyed by environment name.
+    /// Generates Bicep templates. When a target environment is set, generates only for that
+    /// environment. Otherwise generates for all Radius environments in the model.
     /// </summary>
     public Dictionary<string, string> GenerateBicep()
     {
         var results = new Dictionary<string, string>();
-        var environments = _model.Resources.OfType<RadiusEnvironmentResource>().ToList();
+        var allEnvironments = _model.Resources.OfType<RadiusEnvironmentResource>().ToList();
 
-        if (environments.Count == 0)
+        if (allEnvironments.Count == 0)
         {
             _logger.LogWarning("No RadiusEnvironmentResource found in app model. Skipping Bicep generation.");
             return results;
         }
 
-        var firstEnvironment = environments[0];
+        var firstEnvironment = allEnvironments[0];
+
+        // Scope to the target environment if specified, otherwise generate for all
+        var environments = _targetEnvironment is not null
+            ? [_targetEnvironment]
+            : allEnvironments;
 
         foreach (var env in environments)
         {

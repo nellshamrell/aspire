@@ -71,7 +71,7 @@ public static class RadiusEnvironmentExtensions
                         ? opts => { foreach (var cb in configCallbacks) { cb(opts); } }
                         : null;
 
-                    var context = new RadiusBicepPublishingContext(model, logger, combinedCallback);
+                    var context = new RadiusBicepPublishingContext(model, logger, combinedCallback, resource);
                     var bicepOutputs = context.GenerateBicep();
 
                     var environments = model.Resources.OfType<RadiusEnvironmentResource>().ToList();
@@ -82,8 +82,7 @@ public static class RadiusEnvironmentExtensions
                         string outputDir;
                         if (environments.Count > 1)
                         {
-                            var envResource = environments.First(e => e.EnvironmentName == envName);
-                            outputDir = outputService.GetOutputDirectory(envResource);
+                            outputDir = outputService.GetOutputDirectory(resource);
                         }
                         else
                         {

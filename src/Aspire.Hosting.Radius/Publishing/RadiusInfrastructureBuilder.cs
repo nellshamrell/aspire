@@ -74,6 +74,12 @@ internal sealed class RadiusInfrastructureBuilder
                 continue;
             }
 
+            // Skip non-deployable resources (e.g. ParameterResource, password parameters)
+            if (resource is ParameterResource)
+            {
+                continue;
+            }
+
             // Skip child resources — they are processed via their parent
             if (resource is IResourceWithParent)
             {
@@ -260,11 +266,18 @@ internal sealed class RadiusInfrastructureBuilder
         if (connections.Count > 0)
         {
             sb.AppendLine("    connections: {");
-            foreach (var (connName, sourceId) in connections)
+            foreach (var (connName, sourceId, isLiteral) in connections)
             {
                 // T042d: quote connection names to handle hyphens
                 sb.AppendLine($"      '{connName}': {{");
-                sb.AppendLine($"        source: {sourceId}.id");
+                if (isLiteral)
+                {
+                    sb.AppendLine($"        source: {sourceId}");
+                }
+                else
+                {
+                    sb.AppendLine($"        source: {sourceId}.id");
+                }
                 sb.AppendLine("      }");
             }
             sb.AppendLine("    }");
@@ -357,9 +370,9 @@ internal sealed class RadiusInfrastructureBuilder
         return envVars;
     }
 
-    private List<(string Name, string SourceBicepId)> GetConnections(IResource resource)
+    private List<(string Name, string SourceBicepId, bool IsLiteral)> GetConnections(IResource resource)
     {
-        var connections = new List<(string, string)>();
+        var connections = new List<(string, string, bool)>();
 
         // Build a lookup of portable resource identifiers
         var portableIdentifiers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -381,7 +394,7 @@ internal sealed class RadiusInfrastructureBuilder
             // Try to find the portable resource ID
             if (portableIdentifiers.TryGetValue(refName, out var bicepId))
             {
-                connections.Add((refName, bicepId));
+                connections.Add((refName, bicepId, false));
                 continue;
             }
 
@@ -391,13 +404,13 @@ internal sealed class RadiusInfrastructureBuilder
                 var parentName = childRef.Parent.Name;
                 if (portableIdentifiers.TryGetValue(parentName, out var parentBicepId))
                 {
-                    connections.Add((refName, parentBicepId));
+                    connections.Add((refName, parentBicepId, false));
                     continue;
                 }
             }
 
             // T040c: DNS service name mapping for non-portable references
-            connections.Add((refName, $"'{refName}.svc.cluster.local'"));
+            connections.Add((refName, $"'{refName}.svc.cluster.local'", true));
         }
 
         return connections;

@@ -10,6 +10,7 @@ using Aspire.Hosting.Lifecycle;
 using Aspire.Hosting.Pipelines;
 using Aspire.Hosting.Radius;
 using Aspire.Hosting.Radius.Annotations;
+using Aspire.Hosting.Radius.Deployment;
 using Aspire.Hosting.Radius.Models;
 using Aspire.Hosting.Radius.Publishing;
 using Microsoft.Extensions.DependencyInjection;
@@ -108,6 +109,17 @@ public static class RadiusEnvironmentExtensions
             };
 
             return [publishStep];
+        }));
+
+        // T049: Register the deploy pipeline step
+        resourceBuilder.WithAnnotation(new PipelineStepAnnotation((factoryContext) =>
+        {
+            if (factoryContext.Resource.IsExcludedFromPublish())
+            {
+                return [];
+            }
+
+            return [RadiusDeploymentPipelineStep.Create(resource)];
         }));
 
         return resourceBuilder;

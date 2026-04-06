@@ -51,7 +51,7 @@ internal static class MultiResourceAppHost
         builder.AddContainer("worker", "myregistry/worker:latest");
 
         // Project resource (using inline IProjectMetadata stub)
-        builder.AddProject<TestProject>("api");
+        builder.AddProject<TestProject>("api", launchProfileName: null);
 
         return builder;
     }

@@ -4,6 +4,7 @@
 using Aspire.Hosting.ApplicationModel;
 using Aspire.Hosting.Eventing;
 using Aspire.Hosting.Lifecycle;
+using Aspire.Hosting.Radius.Annotations;
 using Microsoft.Extensions.Logging;
 
 namespace Aspire.Hosting.Radius;
@@ -25,8 +26,6 @@ internal sealed class RadiusInfrastructure(
 
     private Task OnBeforeStartAsync(BeforeStartEvent @event, CancellationToken cancellationToken = default)
     {
-        // Full implementation will be added in Phase 3 (T026)
-        // This stub ensures DI registration compiles and the event subscription is established
         if (executionContext.IsRunMode)
         {
             return Task.CompletedTask;
@@ -36,14 +35,59 @@ internal sealed class RadiusInfrastructure(
 
         if (radiusEnvironments.Length == 0)
         {
+            EnsureNoPublishAsRadiusResourceAnnotations(@event.Model);
             return Task.CompletedTask;
         }
 
         foreach (var environment in radiusEnvironments)
         {
-            logger.LogInformation("Radius environment '{Name}' configured with namespace '{Namespace}'.", environment.Name, environment.Namespace);
+            logger.LogInformation(
+                "Setting up Radius environment '{Name}' with namespace '{Namespace}'.",
+                environment.Name,
+                environment.Namespace);
+
+            foreach (var r in @event.Model.GetComputeResources())
+            {
+                // Skip resources that are explicitly targeted to a different compute environment
+                var resourceComputeEnvironment = r.GetComputeEnvironment();
+                if (resourceComputeEnvironment is not null && resourceComputeEnvironment != environment)
+                {
+                    continue;
+                }
+
+                // Create a Radius deployment resource for the compute resource
+                var deploymentResource = new RadiusDeploymentResource(
+                    $"{r.Name}-radius",
+                    r,
+                    environment);
+
+                // Add deployment target annotation to the resource
+                r.Annotations.Add(new DeploymentTargetAnnotation(deploymentResource)
+                {
+                    ComputeEnvironment = environment
+                });
+
+                logger.LogDebug(
+                    "Attached DeploymentTargetAnnotation to resource '{ResourceName}' targeting Radius environment '{EnvironmentName}'.",
+                    r.Name,
+                    environment.Name);
+            }
         }
 
         return Task.CompletedTask;
+    }
+
+    private static void EnsureNoPublishAsRadiusResourceAnnotations(DistributedApplicationModel appModel)
+    {
+        foreach (var r in appModel.GetComputeResources())
+        {
+            if (r.HasAnnotationOfType<RadiusResourceCustomizationAnnotation>())
+            {
+                throw new InvalidOperationException(
+                    $"Resource '{r.Name}' is configured to publish as a Radius resource, " +
+                    $"but there are no '{nameof(RadiusEnvironmentResource)}' resources. " +
+                    $"Ensure you have added one by calling '{nameof(RadiusEnvironmentExtensions.AddRadiusEnvironment)}'.");
+            }
+        }
     }
 }

@@ -163,8 +163,42 @@ public class ResourceTypeMapperTests
         Assert.False(ResourceTypeMapper.IsPortableResource(mapping));
     }
 
+    [Fact]
+    public void DaprStateStoreResource_MapsToStateStores()
+    {
+        // Dapr hosting package is not available in this workspace, so test via
+        // a stub resource whose type name matches the string-name mapper entry.
+        var resource = new DaprStateStoreResource("my-statestore");
+
+        var mapping = ResourceTypeMapper.GetRadiusMapping(resource, _logger);
+
+        Assert.Equal("Applications.Dapr/stateStores", mapping.Type);
+        Assert.True(ResourceTypeMapper.IsPortableResource(mapping));
+    }
+
+    [Fact]
+    public void DaprPubSubResource_MapsToPubSubBrokers()
+    {
+        var resource = new DaprPubSubResource("my-pubsub");
+
+        var mapping = ResourceTypeMapper.GetRadiusMapping(resource, _logger);
+
+        Assert.Equal("Applications.Dapr/pubSubBrokers", mapping.Type);
+        Assert.True(ResourceTypeMapper.IsPortableResource(mapping));
+    }
+
     /// <summary>
     /// A dummy resource type unknown to the mapper for testing fallback behavior.
     /// </summary>
     private sealed class TestCustomResource(string name) : Resource(name);
+
+    /// <summary>
+    /// Stub resource whose type name matches the DaprStateStoreResource mapper entry.
+    /// </summary>
+    private sealed class DaprStateStoreResource(string name) : Resource(name);
+
+    /// <summary>
+    /// Stub resource whose type name matches the DaprPubSubResource mapper entry.
+    /// </summary>
+    private sealed class DaprPubSubResource(string name) : Resource(name);
 }

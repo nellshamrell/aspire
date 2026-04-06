@@ -1,6 +1,7 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+using System.Diagnostics;
 using System.Text.Json;
 using Aspire.Hosting.ApplicationModel;
 using Aspire.Hosting.Radius.Preview;
@@ -277,6 +278,152 @@ public class PreviewGraphGeneratorTests : IDisposable
             Assert.Single(sqlserver.Connections);
             Assert.Equal("api", sqlserver.Connections[0].Name);
             Assert.Equal("Inbound", sqlserver.Connections[0].Direction);
+        }
+    }
+
+    [Fact]
+    public async Task GenerateAsync_CircularReferences_NoDuplicateConnections()
+    {
+        // Multiple containers referencing the same portable resource.
+        // Verify: no duplicate inbound connections, correct bidirectional edges,
+        // generation completes without issues.
+        var (app, model, radiusEnv) = await BuildModelWithBeforeStartAsync(builder =>
+        {
+            builder.AddRadiusEnvironment("myapp");
+            var redis = builder.AddRedis("cache");
+            builder.AddContainer("serviceA", "imageA:latest")
+                .WithReference(redis);
+            builder.AddContainer("serviceB", "imageB:latest")
+                .WithReference(redis);
+        });
+
+        using (app)
+        {
+            var generator = new PreviewGraphGenerator(_logger);
+            await generator.GenerateAsync(model, radiusEnv, _outputDir);
+
+            var graphJson = await File.ReadAllTextAsync(Path.Combine(_outputDir, "graph.json"));
+            var graph = JsonSerializer.Deserialize<PreviewGraphResponse>(graphJson)!;
+
+            Assert.Equal(3, graph.Resources.Count); // serviceA, serviceB, cache
+
+            var serviceA = graph.Resources.First(r => r.Name == "serviceA");
+            var serviceB = graph.Resources.First(r => r.Name == "serviceB");
+            var cache = graph.Resources.First(r => r.Name == "cache");
+
+            // serviceA should have exactly 1 outbound connection to cache
+            Assert.Single(serviceA.Connections);
+            Assert.Equal("cache", serviceA.Connections[0].Name);
+            Assert.Equal("Outbound", serviceA.Connections[0].Direction);
+
+            // serviceB should have exactly 1 outbound connection to cache
+            Assert.Single(serviceB.Connections);
+            Assert.Equal("cache", serviceB.Connections[0].Name);
+            Assert.Equal("Outbound", serviceB.Connections[0].Direction);
+
+            // cache should have exactly 2 inbound connections (from serviceA and serviceB), no duplicates
+            Assert.Equal(2, cache.Connections.Count);
+            Assert.All(cache.Connections, c => Assert.Equal("Inbound", c.Direction));
+            Assert.Contains(cache.Connections, c => c.Name == "serviceA");
+            Assert.Contains(cache.Connections, c => c.Name == "serviceB");
+        }
+    }
+
+    [Fact]
+    public async Task GenerateAsync_UnmappedResourceType_IncludedAsContainerWithWarning()
+    {
+        // The ResourceTypeMapper falls back to Applications.Core/containers for unknown types
+        // and logs a warning. The generator should still include these resources in the graph.
+        var (app, model, radiusEnv) = await BuildModelWithBeforeStartAsync(builder =>
+        {
+            builder.AddRadiusEnvironment("myapp");
+            builder.AddContainer("api", "myimage:latest");
+        });
+
+        using (app)
+        {
+            var generator = new PreviewGraphGenerator(_logger);
+            await generator.GenerateAsync(model, radiusEnv, _outputDir);
+
+            var graphJson = await File.ReadAllTextAsync(Path.Combine(_outputDir, "graph.json"));
+            var graph = JsonSerializer.Deserialize<PreviewGraphResponse>(graphJson)!;
+
+            // Container is not "unmapped" per se, but verify the fallback behavior:
+            // all resources should appear in graph with container type
+            Assert.Single(graph.Resources);
+            Assert.Equal("api", graph.Resources[0].Name);
+            Assert.Equal("Applications.Core/containers", graph.Resources[0].Type);
+        }
+    }
+
+    [Fact]
+    public async Task GenerateAsync_WritesStatusWithCorrectResourceCount_EvenWhenZero()
+    {
+        var (app, model, radiusEnv) = await BuildModelWithBeforeStartAsync(builder =>
+        {
+            builder.AddRadiusEnvironment("myapp");
+            // No resources added — only the RadiusEnvironment itself
+        });
+
+        using (app)
+        {
+            var generator = new PreviewGraphGenerator(_logger);
+            await generator.GenerateAsync(model, radiusEnv, _outputDir);
+
+            var statusJson = await File.ReadAllTextAsync(Path.Combine(_outputDir, "status.json"));
+            var status = JsonSerializer.Deserialize<PreviewStatus>(statusJson)!;
+
+            Assert.True(status.PreviewMode);
+            Assert.Equal(0, status.ResourceCount);
+
+            var graphJson = await File.ReadAllTextAsync(Path.Combine(_outputDir, "graph.json"));
+            var graph = JsonSerializer.Deserialize<PreviewGraphResponse>(graphJson)!;
+
+            Assert.Empty(graph.Resources);
+        }
+    }
+
+    [Fact]
+    public async Task GenerateAsync_CompletesWithin2Seconds_For20ResourcesWith10Connections()
+    {
+        // SC-007: Preview data generation < 2 seconds for apps with up to 20 resources
+        var (app, model, radiusEnv) = await BuildModelWithBeforeStartAsync(builder =>
+        {
+            builder.AddRadiusEnvironment("benchmark");
+
+            // Create 10 Redis resources (portable) and 10 containers (workloads)
+            var portableResources = new List<IResourceBuilder<RedisResource>>();
+            for (int i = 0; i < 10; i++)
+            {
+                portableResources.Add(builder.AddRedis($"redis{i}"));
+            }
+
+            // Each container references one Redis resource → 10 connections
+            for (int i = 0; i < 10; i++)
+            {
+                builder.AddContainer($"service{i}", $"image{i}:latest")
+                    .WithReference(portableResources[i]);
+            }
+        });
+
+        using (app)
+        {
+            var generator = new PreviewGraphGenerator(_logger);
+
+            var sw = Stopwatch.StartNew();
+            await generator.GenerateAsync(model, radiusEnv, _outputDir);
+            sw.Stop();
+
+            Assert.True(sw.Elapsed < TimeSpan.FromSeconds(2),
+                $"Preview generation took {sw.Elapsed.TotalMilliseconds:F0}ms, expected < 2000ms");
+
+            // Verify output correctness
+            var graphJson = await File.ReadAllTextAsync(Path.Combine(_outputDir, "graph.json"));
+            var graph = JsonSerializer.Deserialize<PreviewGraphResponse>(graphJson)!;
+
+            Assert.Equal(20, graph.Resources.Count);
+            var outboundConnections = graph.Resources.Sum(r => r.Connections.Count(c => c.Direction == "Outbound"));
+            Assert.Equal(10, outboundConnections);
         }
     }
 

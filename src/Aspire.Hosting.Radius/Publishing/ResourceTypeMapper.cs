@@ -30,6 +30,8 @@ internal static class ResourceTypeMapper
         ["RabbitMQServerResource"] = new("Applications.Messaging/rabbitMQQueues", RadiusApiVersion, "ghcr.io/radius-project/recipes/local-dev/rabbitmqqueues:latest"),
         ["PostgresServerResource"] = new("Applications.Datastores/postgresDatabases", RadiusApiVersion, null, Models.RadiusResourceProvisioning.Manual),
         ["PostgresDatabaseResource"] = new("Applications.Datastores/postgresDatabases", RadiusApiVersion, null, Models.RadiusResourceProvisioning.Manual),
+        ["DaprStateStoreResource"] = new("Applications.Dapr/stateStores", RadiusApiVersion, defaultRecipe: null),
+        ["DaprPubSubResource"] = new("Applications.Dapr/pubSubBrokers", RadiusApiVersion, defaultRecipe: null),
     };
 
     /// <summary>

@@ -2,10 +2,16 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 #pragma warning disable ASPIREPIPELINES001 // Type is for evaluation purposes only and is subject to change or removal in future updates. Suppress this diagnostic to proceed.
+#pragma warning disable ASPIREPIPELINES004 // IPipelineOutputService is for evaluation purposes only
 
 using System.Diagnostics.CodeAnalysis;
 using Aspire.Hosting.ApplicationModel;
 using Aspire.Hosting.Pipelines;
+using Aspire.Hosting.Radius.Annotations;
+using Aspire.Hosting.Radius.Provisioning;
+using Aspire.Hosting.Radius.Publishing;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 namespace Aspire.Hosting.Radius;
 
@@ -54,10 +60,27 @@ public sealed class RadiusEnvironmentResource : Resource, IComputeEnvironmentRes
         return ReferenceExpression.Create($"{resource.Name}.svc.cluster.local");
     }
 
-    private static Task PublishAsync(PipelineStepContext context)
+    private static async Task PublishAsync(PipelineStepContext context)
     {
-        // Publishing implementation will be added in Phase 4 (T039)
-        _ = context; // Will be used by the publishing implementation
-        return Task.CompletedTask;
+        var outputService = context.Services.GetRequiredService<IPipelineOutputService>();
+        var logger = context.Services.GetRequiredService<ILoggerFactory>().CreateLogger<RadiusEnvironmentResource>();
+        var outputDir = outputService.GetOutputDirectory();
+
+        // Collect ConfigureRadiusInfrastructure callbacks from environment resources
+        Action<RadiusInfrastructureOptions>? configureCallback = null;
+        foreach (var envResource in context.Model.Resources.OfType<RadiusEnvironmentResource>())
+        {
+            foreach (var annotation in envResource.Annotations.OfType<RadiusInfrastructureConfigurationAnnotation>())
+            {
+                var existingCallback = configureCallback;
+                var newCallback = annotation.Configure;
+                configureCallback = existingCallback is null
+                    ? newCallback
+                    : options => { existingCallback(options); newCallback(options); };
+            }
+        }
+
+        var publishingContext = new RadiusBicepPublishingContext(context.Model, outputDir, logger);
+        await publishingContext.GenerateBicepAsync(configureCallback).ConfigureAwait(false);
     }
 }

@@ -6,6 +6,7 @@ using Aspire.Hosting.Lifecycle;
 using Aspire.Hosting.Radius;
 using Aspire.Hosting.Radius.Annotations;
 using Aspire.Hosting.Radius.Models;
+using Aspire.Hosting.Radius.Provisioning;
 
 namespace Aspire.Hosting;
 
@@ -88,6 +89,25 @@ public static class RadiusEnvironmentExtensions
         configure(customization);
 
         builder.Resource.Annotations.Add(new RadiusResourceCustomizationAnnotation(customization));
+
+        return builder;
+    }
+
+    /// <summary>
+    /// Configures the Radius infrastructure AST before Bicep compilation.
+    /// </summary>
+    /// <param name="builder">The Radius environment resource builder.</param>
+    /// <param name="configure">A delegate to customize the <see cref="RadiusInfrastructureOptions"/>.</param>
+    /// <returns>A reference to the <see cref="IResourceBuilder{RadiusEnvironmentResource}"/>.</returns>
+    [AspireExportIgnore]
+    public static IResourceBuilder<RadiusEnvironmentResource> ConfigureRadiusInfrastructure(
+        this IResourceBuilder<RadiusEnvironmentResource> builder,
+        Action<RadiusInfrastructureOptions> configure)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        ArgumentNullException.ThrowIfNull(configure);
+
+        builder.Resource.Annotations.Add(new RadiusInfrastructureConfigurationAnnotation(configure));
 
         return builder;
     }

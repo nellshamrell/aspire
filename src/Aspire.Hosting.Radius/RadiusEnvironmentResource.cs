@@ -8,6 +8,7 @@ using System.Diagnostics.CodeAnalysis;
 using Aspire.Hosting.ApplicationModel;
 using Aspire.Hosting.Pipelines;
 using Aspire.Hosting.Radius.Annotations;
+using Aspire.Hosting.Radius.Deployment;
 using Aspire.Hosting.Radius.Provisioning;
 using Aspire.Hosting.Radius.Publishing;
 using Microsoft.Extensions.DependencyInjection;
@@ -39,14 +40,43 @@ public sealed class RadiusEnvironmentResource : Resource, IComputeEnvironmentRes
     {
         Annotations.Add(new PipelineStepAnnotation(context =>
         {
-            var step = new PipelineStep
+            var steps = new List<PipelineStep>();
+
+            // Step 1: Publish — generates Bicep files
+            var publishStep = new PipelineStep
             {
                 Name = $"publish-{Name}",
                 Description = $"Publishes the Radius environment configuration for {Name}.",
                 Action = ctx => PublishAsync(ctx)
             };
-            step.RequiredBy(WellKnownPipelineSteps.Publish);
-            return step;
+            publishStep.RequiredBy(WellKnownPipelineSteps.Publish);
+            steps.Add(publishStep);
+
+            // Step 2: Validate rad CLI availability (deploy prereq)
+            var validateRadStep = new PipelineStep
+            {
+                Name = $"validate-rad-cli-{Name}",
+                Description = $"Validates that the Radius CLI (rad) is available for {Name}.",
+                Action = RadiusDeploymentPipelineStep.ValidateRadCliAsync,
+                DependsOnSteps = [WellKnownPipelineSteps.DeployPrereq]
+            };
+            validateRadStep.RequiredBy(WellKnownPipelineSteps.Deploy);
+            steps.Add(validateRadStep);
+
+            // Step 3: Deploy — executes rad deploy (depends on publish + validate)
+            // NOTE (T049a): Intentionally does NOT depend on WellKnownPipelineSteps.Push.
+            // Kind clusters use 'kind load' to preload images; no registry is needed.
+            var deployStep = new PipelineStep
+            {
+                Name = $"deploy-radius-{Name}",
+                Description = $"Deploys the Radius application for {Name}.",
+                Action = RadiusDeploymentPipelineStep.DeployAsync,
+                DependsOnSteps = [$"publish-{Name}", $"validate-rad-cli-{Name}"]
+            };
+            deployStep.RequiredBy(WellKnownPipelineSteps.Deploy);
+            steps.Add(deployStep);
+
+            return steps;
         }));
     }
 

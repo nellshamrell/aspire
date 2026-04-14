@@ -1,0 +1,157 @@
+// Licensed to the .NET Foundation under one or more agreements.
+// The .NET Foundation licenses this file to you under the MIT license.
+
+using System.Text.RegularExpressions;
+using Aspire.Hosting.Radius.Publishing.Constructs;
+using Azure.Provisioning;
+using Microsoft.Extensions.Logging;
+
+namespace Aspire.Hosting.Radius.Publishing;
+
+/// <summary>
+/// Utility methods for Bicep post-processing: identifier sanitization,
+/// recipe reference validation, and <c>extension radius</c> injection.
+/// </summary>
+internal static partial class BicepPostProcessor
+{
+    /// <summary>
+    /// Compiles <see cref="RadiusInfrastructureOptions"/> to Bicep using the
+    /// Azure.Provisioning SDK pipeline (<c>Infrastructure.Build().Compile()</c>)
+    /// and prepends the <c>extension radius</c> directive.
+    /// </summary>
+    internal static string CompileBicep(RadiusInfrastructureOptions options, string environmentName, ILogger logger)
+    {
+        // Validate recipe references before compiling
+        ValidateRecipeReferences(options, logger);
+
+        var infra = new RadiusResourceInfrastructure(environmentName);
+
+        // Add all constructs in block order:
+        // 1. Recipe packs (referenced by environments)
+        // 2. Environments
+        // 3. Applications
+        // 4. Resource type instances
+        // 5. Containers
+        foreach (var resource in options.RecipePacks)
+        {
+            infra.Add(resource);
+        }
+
+        foreach (var resource in options.Environments)
+        {
+            infra.Add(resource);
+        }
+
+        foreach (var resource in options.Applications)
+        {
+            infra.Add(resource);
+        }
+
+        foreach (var resource in options.ResourceTypeInstances)
+        {
+            infra.Add(resource);
+        }
+
+        foreach (var resource in options.Containers)
+        {
+            infra.Add(resource);
+        }
+
+        var plan = infra.Build(new ProvisioningBuildOptions());
+        var compiled = plan.Compile();
+
+        // The SDK generates a single file named "{infraName}.bicep"
+        var bicepContent = compiled.Values.First().ToString();
+
+        // Prepend `extension radius` directive (not natively supported by the SDK)
+        return $"extension radius\n\n{bicepContent}";
+    }
+
+    /// <summary>
+    /// Generates the companion bicepconfig.json content.
+    /// </summary>
+    internal static string RenderBicepConfig()
+    {
+        return """
+            {
+                "experimentalFeaturesEnabled": {
+                    "extensibility": true
+                },
+                "extensions": {
+                    "radius": "br:biceptypes.azurecr.io/radius:latest",
+                    "aws": "br:biceptypes.azurecr.io/aws:latest"
+                }
+            }
+            """;
+    }
+
+    /// <summary>
+    /// Sanitizes a resource name into a valid Bicep identifier.
+    /// </summary>
+    internal static string SanitizeIdentifier(string name)
+    {
+        if (string.IsNullOrEmpty(name))
+        {
+            return "resource";
+        }
+
+        // Replace non-alphanumeric/underscore characters with underscores
+        var sanitized = InvalidIdentifierChars().Replace(name, "_");
+
+        // Names starting with a digit are prefixed with 'r'
+        if (char.IsDigit(sanitized[0]))
+        {
+            sanitized = "r" + sanitized;
+        }
+
+        // "radius" collides with the `extension radius` directive
+        if (string.Equals(sanitized, "radius", StringComparison.OrdinalIgnoreCase))
+        {
+            sanitized = "radiusenv";
+        }
+
+        return sanitized;
+    }
+
+    /// <summary>
+    /// Converts a .NET value to a type compatible with <c>BicepValue</c> assignment.
+    /// </summary>
+    internal static object ToBicepLiteral(object value)
+    {
+        return value switch
+        {
+            string or int or long or bool or double or float or decimal => value,
+            _ => throw new NotSupportedException(
+                $"Bicep parameter type '{value.GetType().Name}' is not supported. " +
+                $"Supported types: string, int, long, double, float, decimal, bool.")
+        };
+    }
+
+    private static void ValidateRecipeReferences(RadiusInfrastructureOptions options, ILogger logger)
+    {
+        // Collect all recipe type keys from recipe packs
+        var registeredTypes = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var pack in options.RecipePacks.OfType<RadiusRecipePackConstruct>())
+        {
+            foreach (var key in pack.Recipes.Keys)
+            {
+                registeredTypes.Add(key);
+            }
+        }
+
+        // Check resource type instances for recipes referencing unregistered types
+        foreach (var instance in options.ResourceTypeInstances.OfType<RadiusResourceTypeConstruct>())
+        {
+            if (!instance.RecipeName.IsEmpty && !registeredTypes.Contains(instance.RadiusType))
+            {
+                logger.LogWarning(
+                    "Resource '{ResourceName}' references a recipe but resource type '{ResourceType}' is not registered in any recipe pack.",
+                    instance.BicepIdentifier,
+                    instance.RadiusType);
+            }
+        }
+    }
+
+    [GeneratedRegex("[^a-zA-Z0-9_]")]
+    private static partial Regex InvalidIdentifierChars();
+}

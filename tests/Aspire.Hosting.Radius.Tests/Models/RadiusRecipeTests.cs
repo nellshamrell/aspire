@@ -16,23 +16,23 @@ public class RadiusRecipeTests
     }
 
     [Fact]
-    public void RadiusRecipe_TemplatePath_DefaultsToNull()
+    public void RadiusRecipe_RecipeLocation_DefaultsToNull()
     {
         var recipe = new RadiusRecipe { Name = "test" };
 
-        Assert.Null(recipe.TemplatePath);
+        Assert.Null(recipe.RecipeLocation);
     }
 
     [Fact]
-    public void RadiusRecipe_TemplatePath_CanBeSet()
+    public void RadiusRecipe_RecipeLocation_CanBeSet()
     {
         var recipe = new RadiusRecipe
         {
             Name = "azure-redis-premium",
-            TemplatePath = "ghcr.io/myorg/recipes/redis-premium:v1"
+            RecipeLocation = "ghcr.io/myorg/recipes/redis-premium:v1"
         };
 
-        Assert.Equal("ghcr.io/myorg/recipes/redis-premium:v1", recipe.TemplatePath);
+        Assert.Equal("ghcr.io/myorg/recipes/redis-premium:v1", recipe.RecipeLocation);
     }
 
     [Fact]
@@ -119,7 +119,7 @@ public class RadiusRecipeTests
             Recipe = new RadiusRecipe
             {
                 Name = "azure-redis-premium",
-                TemplatePath = "ghcr.io/myorg/recipes/redis-premium:v1",
+                RecipeLocation = "ghcr.io/myorg/recipes/redis-premium:v1",
                 Parameters = { ["sku"] = "Premium" }
             }
         };

@@ -7,9 +7,11 @@ using Azure.Provisioning.Primitives;
 namespace Aspire.Hosting.Radius.Publishing.Constructs;
 
 /// <summary>
-/// Represents a <c>Radius.Core/applications</c> resource in the Bicep AST.
+/// Represents a legacy <c>Applications.Core/applications@2023-10-01-preview</c>
+/// resource in the Bicep AST. Parent for <c>Applications.*</c> portable
+/// resources that still use the legacy fallback path.
 /// </summary>
-public sealed class RadiusApplicationConstruct : ProvisionableResource
+public sealed class LegacyApplicationConstruct : ProvisionableResource
 {
     private BicepValue<string>? _name;
     private BicepValue<string>? _environmentId;
@@ -21,16 +23,16 @@ public sealed class RadiusApplicationConstruct : ProvisionableResource
         set { Initialize(); _name!.Assign(value); }
     }
 
-    /// <summary>Reference to the environment resource ID.</summary>
+    /// <summary>Reference to the legacy environment resource ID.</summary>
     public BicepValue<string> EnvironmentId
     {
         get { Initialize(); return _environmentId!; }
         set { Initialize(); _environmentId!.Assign(value); }
     }
 
-    /// <summary>Initializes a new <see cref="RadiusApplicationConstruct"/> with the given Bicep identifier.</summary>
-    public RadiusApplicationConstruct(string bicepIdentifier)
-        : base(bicepIdentifier, new Azure.Core.ResourceType("Radius.Core/applications"), "2025-08-01-preview")
+    /// <summary>Initializes a new <see cref="LegacyApplicationConstruct"/> with the given Bicep identifier.</summary>
+    public LegacyApplicationConstruct(string bicepIdentifier)
+        : base(bicepIdentifier, new Azure.Core.ResourceType("Applications.Core/applications"), "2023-10-01-preview")
     {
     }
 

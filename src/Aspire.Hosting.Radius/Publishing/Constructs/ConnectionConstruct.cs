@@ -9,7 +9,7 @@ namespace Aspire.Hosting.Radius.Publishing.Constructs;
 /// <summary>
 /// Represents a connection entry in a container's connections block.
 /// </summary>
-internal sealed class ConnectionConstruct : ProvisionableConstruct
+public sealed class ConnectionConstruct : ProvisionableConstruct
 {
     private BicepValue<string>? _source;
 
@@ -20,6 +20,7 @@ internal sealed class ConnectionConstruct : ProvisionableConstruct
         set { Initialize(); _source!.Assign(value); }
     }
 
+    /// <summary>Initializes a new <see cref="ConnectionConstruct"/>.</summary>
     protected override void DefineProvisionableProperties()
     {
         _source = DefineProperty<string>(nameof(Source), ["source"]);

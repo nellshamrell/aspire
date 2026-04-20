@@ -11,7 +11,7 @@ namespace Aspire.Hosting.Radius.Models;
 /// <b>Upstream deprecation note</b>: Radius's user-defined resource type (UDT) model is
 /// retiring named recipes in favor of one recipe per resource type per environment.
 /// <see cref="Name"/> will continue to work with legacy portable resource types but should
-/// be considered deprecated for forward compatibility. <see cref="TemplatePath"/> and
+/// be considered deprecated for forward compatibility. <see cref="RecipeLocation"/> and
 /// <see cref="Parameters"/> remain valid under UDTs.
 /// </para>
 /// <para>
@@ -31,9 +31,15 @@ public class RadiusRecipe
     public required string Name { get; set; }
 
     /// <summary>
-    /// Gets or sets the OCI template path for recipe registration in a recipe pack.
+    /// Gets or sets the OCI template location for recipe registration in a recipe pack.
     /// </summary>
-    public string? TemplatePath { get; set; }
+    /// <remarks>
+    /// Emitted as <c>recipeLocation</c> on the new <c>Radius.Core/recipePacks</c> UDT, and as
+    /// <c>templatePath</c> under the legacy <c>Applications.Core/environments@2023-10-01-preview</c>
+    /// inline <c>properties.recipes</c> shape. Renamed from <c>TemplatePath</c> in
+    /// 2026-04-20 to align with the shipped Radius UDT schema (breaking pre-GA change).
+    /// </remarks>
+    public string? RecipeLocation { get; set; }
 
     /// <summary>
     /// Gets or sets the recipe parameters. Values are serialized to correct Bicep types

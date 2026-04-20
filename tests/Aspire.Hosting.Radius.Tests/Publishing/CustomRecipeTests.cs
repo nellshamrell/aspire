@@ -64,7 +64,7 @@ public class CustomRecipeTests
     }
 
     [Fact]
-    public void CustomRecipeWithTemplatePath_RegistersInRecipePack()
+    public void CustomRecipeWithRecipeLocation_RegistersInRecipePack()
     {
         using var builder = TestDistributedApplicationBuilder.Create(DistributedApplicationOperation.Publish);
         builder.AddRadiusEnvironment("myenv");
@@ -74,7 +74,7 @@ public class CustomRecipeTests
                 c.Recipe = new RadiusRecipe
                 {
                     Name = "custom",
-                    TemplatePath = "ghcr.io/myorg/recipes/redis:1.0"
+                    RecipeLocation = "ghcr.io/myorg/recipes/redis:1.0"
                 };
             });
         builder.AddContainer("api", "myapp/api", "latest");

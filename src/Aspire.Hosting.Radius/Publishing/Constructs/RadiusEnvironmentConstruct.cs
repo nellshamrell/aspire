@@ -9,7 +9,7 @@ namespace Aspire.Hosting.Radius.Publishing.Constructs;
 /// <summary>
 /// Represents a <c>Radius.Core/environments</c> resource in the Bicep AST.
 /// </summary>
-internal sealed class RadiusEnvironmentConstruct : ProvisionableResource
+public sealed class RadiusEnvironmentConstruct : ProvisionableResource
 {
     private BicepValue<string>? _name;
     private BicepList<string>? _recipePacks;
@@ -28,11 +28,13 @@ internal sealed class RadiusEnvironmentConstruct : ProvisionableResource
         set { Initialize(); _recipePacks!.Assign(value); }
     }
 
+    /// <summary>Initializes a new <see cref="RadiusEnvironmentConstruct"/> with the given Bicep identifier.</summary>
     public RadiusEnvironmentConstruct(string bicepIdentifier)
         : base(bicepIdentifier, new Azure.Core.ResourceType("Radius.Core/environments"), "2025-08-01-preview")
     {
     }
 
+    /// <inheritdoc />
     protected override void DefineProvisionableProperties()
     {
         _name = DefineProperty<string>(nameof(EnvironmentName), ["name"]);

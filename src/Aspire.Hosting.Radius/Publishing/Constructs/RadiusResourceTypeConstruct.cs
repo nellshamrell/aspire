@@ -12,7 +12,7 @@ namespace Aspire.Hosting.Radius.Publishing.Constructs;
 /// The concrete resource type and API version are passed via the constructor
 /// since they vary per Aspire resource mapping.
 /// </summary>
-internal sealed class RadiusResourceTypeConstruct : ProvisionableResource
+public sealed class RadiusResourceTypeConstruct : ProvisionableResource
 {
     private BicepValue<string>? _name;
     private BicepValue<string>? _applicationId;
@@ -84,12 +84,17 @@ internal sealed class RadiusResourceTypeConstruct : ProvisionableResource
     /// </summary>
     internal string RadiusType { get; }
 
+    /// <summary>Initializes a new <see cref="RadiusResourceTypeConstruct"/>.</summary>
+    /// <param name="bicepIdentifier">The Bicep identifier for the resource.</param>
+    /// <param name="resourceType">The Radius resource type (e.g., <c>Radius.Data/redisCaches</c>).</param>
+    /// <param name="apiVersion">The resource type API version.</param>
     public RadiusResourceTypeConstruct(string bicepIdentifier, string resourceType, string apiVersion)
         : base(bicepIdentifier, new Azure.Core.ResourceType(resourceType), apiVersion)
     {
         RadiusType = resourceType;
     }
 
+    /// <inheritdoc />
     protected override void DefineProvisionableProperties()
     {
         _name = DefineProperty<string>(nameof(ResourceName), ["name"]);

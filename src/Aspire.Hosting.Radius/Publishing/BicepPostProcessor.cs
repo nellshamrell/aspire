@@ -2,7 +2,6 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System.Text.RegularExpressions;
-using Aspire.Hosting.Radius.Publishing.Constructs;
 using Azure.Provisioning;
 using Microsoft.Extensions.Logging;
 
@@ -28,10 +27,12 @@ internal static partial class BicepPostProcessor
 
         // Add all constructs in block order:
         // 1. Recipe packs (referenced by environments)
-        // 2. Environments
-        // 3. Applications
-        // 4. Resource type instances
-        // 5. Containers
+        // 2. UDT environments
+        // 3. UDT applications
+        // 4. Legacy environments (Applications.Core/environments, fallback types)
+        // 5. Legacy applications (Applications.Core/applications)
+        // 6. Resource type instances
+        // 7. Containers
         foreach (var resource in options.RecipePacks)
         {
             infra.Add(resource);
@@ -43,6 +44,16 @@ internal static partial class BicepPostProcessor
         }
 
         foreach (var resource in options.Applications)
+        {
+            infra.Add(resource);
+        }
+
+        foreach (var resource in options.LegacyEnvironments)
+        {
+            infra.Add(resource);
+        }
+
+        foreach (var resource in options.LegacyApplications)
         {
             infra.Add(resource);
         }
@@ -129,9 +140,10 @@ internal static partial class BicepPostProcessor
 
     private static void ValidateRecipeReferences(RadiusInfrastructureOptions options, ILogger logger)
     {
-        // Collect all recipe type keys from recipe packs
+        // Collect all recipe type keys from both UDT recipe packs and legacy
+        // environments (which carry recipes inline).
         var registeredTypes = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var pack in options.RecipePacks.OfType<RadiusRecipePackConstruct>())
+        foreach (var pack in options.RecipePacks)
         {
             foreach (var key in pack.Recipes.Keys)
             {
@@ -139,13 +151,21 @@ internal static partial class BicepPostProcessor
             }
         }
 
+        foreach (var legacyEnv in options.LegacyEnvironments)
+        {
+            foreach (var key in legacyEnv.Recipes.Keys)
+            {
+                registeredTypes.Add(key);
+            }
+        }
+
         // Check resource type instances for recipes referencing unregistered types
-        foreach (var instance in options.ResourceTypeInstances.OfType<RadiusResourceTypeConstruct>())
+        foreach (var instance in options.ResourceTypeInstances)
         {
             if (!instance.RecipeName.IsEmpty && !registeredTypes.Contains(instance.RadiusType))
             {
                 logger.LogWarning(
-                    "Resource '{ResourceName}' references a recipe but resource type '{ResourceType}' is not registered in any recipe pack.",
+                    "Resource '{ResourceName}' references a recipe but resource type '{ResourceType}' is not registered in any recipe pack or legacy environment.",
                     instance.BicepIdentifier,
                     instance.RadiusType);
             }

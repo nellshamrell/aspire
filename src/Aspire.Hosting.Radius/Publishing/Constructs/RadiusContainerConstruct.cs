@@ -14,7 +14,7 @@ namespace Aspire.Hosting.Radius.Publishing.Constructs;
 /// The <c>imagePullPolicy</c> property has been removed from the v2 schema.
 /// See: https://github.com/radius-project/radius/blob/main/eng/design-notes/extensibility/2025-08-container-resource-type.md
 /// </remarks>
-internal sealed class RadiusContainerConstruct : ProvisionableResource
+public sealed class RadiusContainerConstruct : ProvisionableResource
 {
     private BicepValue<string>? _name;
     private BicepValue<string>? _image;
@@ -52,11 +52,13 @@ internal sealed class RadiusContainerConstruct : ProvisionableResource
         set { Initialize(); _connections!.Assign(value); }
     }
 
+    /// <summary>Initializes a new <see cref="RadiusContainerConstruct"/> with the given Bicep identifier.</summary>
     public RadiusContainerConstruct(string bicepIdentifier)
         : base(bicepIdentifier, new Azure.Core.ResourceType("Radius.Compute/containers"), "2025-08-01-preview")
     {
     }
 
+    /// <inheritdoc />
     protected override void DefineProvisionableProperties()
     {
         _name = DefineProperty<string>(nameof(ContainerName), ["name"]);

@@ -56,6 +56,18 @@ public static class RadiusPublishExtensions
     /// <param name="builder">The Radius environment resource builder.</param>
     /// <param name="configure">A callback to mutate the <see cref="RadiusInfrastructureOptions"/>.</param>
     /// <returns>The resource builder for chaining.</returns>
+    /// <remarks>
+    /// <para><b>Identifier-rename propagation.</b> When a callback renames a construct's
+    /// <c>BicepIdentifier</c>, the builder automatically re-resolves only the <c>.id</c>
+    /// cross-references it originally created that targeted the renamed construct
+    /// (app &#x2192; env, resource-type instance &#x2192; app/env, container &#x2192; app,
+    /// container connections &#x2192; target). The rewire is scoped to identifier changes,
+    /// so direct edits a callback makes to any reference value are preserved
+    /// (last-write-wins).</para>
+    /// <para><b>Callback-added constructs.</b> Constructs a callback adds itself are not
+    /// tracked and will not be rewired when a builder-created parent is renamed — set
+    /// such references explicitly in the callback that creates the new construct.</para>
+    /// </remarks>
     [AspireExportIgnore(Reason = "Radius extension — not part of the core Aspire ATS surface.")]
     public static IResourceBuilder<RadiusEnvironmentResource> ConfigureRadiusInfrastructure(
         this IResourceBuilder<RadiusEnvironmentResource> builder,

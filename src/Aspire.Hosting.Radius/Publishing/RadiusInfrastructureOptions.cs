@@ -1,39 +1,52 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-using Azure.Provisioning.Primitives;
+using Aspire.Hosting.Radius.Publishing.Constructs;
 
 namespace Aspire.Hosting.Radius.Publishing;
 
 /// <summary>
-/// Exposes mutable collections of <see cref="ProvisionableResource"/> constructs
-/// for AST customization via the <c>ConfigureRadiusInfrastructure</c> callback.
+/// Exposes strongly-typed mutable collections of Radius construct classes for
+/// AST customization via the <c>ConfigureRadiusInfrastructure</c> callback.
 /// </summary>
 public sealed class RadiusInfrastructureOptions
 {
     /// <summary>
     /// Gets the list of <c>Radius.Core/environments</c> constructs.
     /// </summary>
-    public List<ProvisionableResource> Environments { get; } = [];
+    public List<RadiusEnvironmentConstruct> Environments { get; } = [];
 
     /// <summary>
     /// Gets the list of <c>Radius.Core/applications</c> constructs.
     /// </summary>
-    public List<ProvisionableResource> Applications { get; } = [];
+    public List<RadiusApplicationConstruct> Applications { get; } = [];
 
     /// <summary>
     /// Gets the list of <c>Radius.Core/recipePacks</c> constructs.
     /// </summary>
-    public List<ProvisionableResource> RecipePacks { get; } = [];
+    public List<RadiusRecipePackConstruct> RecipePacks { get; } = [];
 
     /// <summary>
     /// Gets the list of resource type instance constructs
     /// (e.g., <c>Radius.Data/redisCaches</c>, <c>Radius.Messaging/rabbitMQQueues</c>).
     /// </summary>
-    public List<ProvisionableResource> ResourceTypeInstances { get; } = [];
+    public List<RadiusResourceTypeConstruct> ResourceTypeInstances { get; } = [];
 
     /// <summary>
     /// Gets the list of <c>Radius.Compute/containers</c> workload constructs.
     /// </summary>
-    public List<ProvisionableResource> Containers { get; } = [];
+    public List<RadiusContainerConstruct> Containers { get; } = [];
+
+    /// <summary>
+    /// Gets the list of legacy <c>Applications.Core/environments</c> constructs
+    /// emitted when one or more targeted resources fall back to a legacy
+    /// <c>Applications.*</c> type (e.g., Redis, Mongo, RabbitMQ, Dapr).
+    /// </summary>
+    public List<LegacyApplicationEnvironmentConstruct> LegacyEnvironments { get; } = [];
+
+    /// <summary>
+    /// Gets the list of legacy <c>Applications.Core/applications</c> constructs
+    /// paired with <see cref="LegacyEnvironments"/>.
+    /// </summary>
+    public List<LegacyApplicationConstruct> LegacyApplications { get; } = [];
 }

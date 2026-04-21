@@ -68,6 +68,11 @@ internal static partial class BicepPostProcessor
             infra.Add(resource);
         }
 
+        foreach (var resource in options.LegacyContainers)
+        {
+            infra.Add(resource);
+        }
+
         var plan = infra.Build(new ProvisioningBuildOptions());
         var compiled = plan.Compile();
 
@@ -75,8 +80,38 @@ internal static partial class BicepPostProcessor
         var bicepContent = compiled.Values.First().ToString();
 
         // Prepend `extension radius` directive (not natively supported by the SDK)
-        return $"extension radius\n\n{bicepContent}";
+        var withExtension = $"extension radius\n\n{bicepContent}";
+
+        // Ensure every Radius.Core/recipePacks resource has a `properties` block.
+        // Azure.Provisioning's BicepDictionary serializer omits empty dictionaries,
+        // so a recipe pack with no entries renders as `name: 'default' }` only,
+        // which fails Bicep BCP035 because the recipePacks UDT requires `properties`.
+        return EnsureRecipePackProperties(withExtension);
     }
+
+    /// <summary>
+    /// Injects <c>properties: { recipes: {} }</c> into <c>Radius.Core/recipePacks</c>
+    /// resource blocks that lack a <c>properties:</c> key. See <see cref="CompileBicep"/>
+    /// for the underlying SDK behaviour this works around.
+    /// </summary>
+    internal static string EnsureRecipePackProperties(string bicep)
+    {
+        return RecipePackWithoutProperties().Replace(bicep, m =>
+        {
+            var indent = m.Groups["indent"].Value;
+            var body = m.Value.TrimEnd();
+            if (body.EndsWith('}'))
+            {
+                body = body[..^1].TrimEnd();
+            }
+            return $"{body}\n{indent}  properties: {{\n{indent}    recipes: {{}}\n{indent}  }}\n{indent}}}";
+        });
+    }
+
+    [GeneratedRegex(
+        @"(?<indent>[ \t]*)resource[ \t]+\w+[ \t]+'Radius\.Core/recipePacks@[^']+'[ \t]*=[ \t]*\{[^{}]*?\n[ \t]*\}",
+        RegexOptions.Singleline)]
+    private static partial Regex RecipePackWithoutProperties();
 
     /// <summary>
     /// Generates the companion bicepconfig.json content.

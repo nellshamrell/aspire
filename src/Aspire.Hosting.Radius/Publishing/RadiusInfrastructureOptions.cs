@@ -49,4 +49,13 @@ public sealed class RadiusInfrastructureOptions
     /// paired with <see cref="LegacyEnvironments"/>.
     /// </summary>
     public List<LegacyApplicationConstruct> LegacyApplications { get; } = [];
+
+    /// <summary>
+    /// Gets the list of legacy <c>Applications.Core/containers</c> workload
+    /// constructs. Populated instead of <see cref="Containers"/> when the
+    /// environment opts in via <c>WithLegacyContainers()</c>. Used as a
+    /// fallback when the <c>Radius.Compute/containers</c> UDT has no recipe
+    /// registered in the target Radius environment.
+    /// </summary>
+    public List<LegacyContainerConstruct> LegacyContainers { get; } = [];
 }

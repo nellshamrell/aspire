@@ -98,18 +98,25 @@ internal sealed class RadiusInfrastructureBuilder
         var hasLegacyResources = radiusResources.Any(r =>
             IsLegacyResourceType(ResolveResourceType(r).ResourceType));
         var hasComputeResources = computeResources.Any();
+        var useLegacyContainers = _environment.UseLegacyContainers;
+
+        // Compute workloads can route to either the UDT compute container type
+        // or the legacy Applications.Core/containers type. When containers go
+        // legacy they don't force the UDT chain (only legacy parents).
+        var computeForcesUdtChain = hasComputeResources && !useLegacyContainers;
+        var computeForcesLegacyChain = hasComputeResources && useLegacyContainers;
 
         // 2. UDT environment + application — emitted only when we have UDT
-        // radius resources or any compute workload (containers parent to the
-        // UDT app). Pure-legacy publishes (e.g., a Redis-only app) skip the UDT
-        // chain entirely so older Radius installs aren't forced to understand
-        // `Radius.Core/*`.
+        // radius resources or any UDT-bound compute workload. Pure-legacy
+        // publishes (Redis-only, or compute-with-WithLegacyContainers) skip
+        // the UDT chain entirely so older Radius installs aren't forced to
+        // understand `Radius.Core/*`.
         RadiusRecipePackConstruct? recipePackConstruct = null;
         RadiusEnvironmentConstruct? envConstruct = null;
         RadiusApplicationConstruct? appConstruct = null;
         var appIdentifier = "app";
 
-        if (hasUdtResources || hasComputeResources)
+        if (hasUdtResources || computeForcesUdtChain)
         {
             recipePackConstruct = CreateRecipePackConstruct(recipePackIdentifier, udtRecipeEntries);
             options.RecipePacks.Add(recipePackConstruct);
@@ -122,20 +129,20 @@ internal sealed class RadiusInfrastructureBuilder
         }
 
         // 3. Legacy parents are emitted lazily — only if any legacy resource is
-        // present. Legacy env/app share the *resource name* with the UDT pair
-        // so Radius still sees them as the same logical app/environment; only
-        // the Bicep identifiers differ.
+        // present, or the env opts into legacy containers. Legacy env/app share
+        // the *resource name* with the UDT pair so Radius still sees them as
+        // the same logical app/environment; only the Bicep identifiers differ.
         LegacyApplicationEnvironmentConstruct? legacyEnvConstruct = null;
         LegacyApplicationConstruct? legacyAppConstruct = null;
 
-        if (hasLegacyResources)
+        if (hasLegacyResources || computeForcesLegacyChain)
         {
             // If the UDT chain is also emitted we suffix legacy identifiers with
             // `_legacy`; otherwise (pure-legacy publish) legacy can claim the
             // unsuffixed identifiers.
-            var legacyEnvIdentifier = (hasUdtResources || hasComputeResources)
+            var legacyEnvIdentifier = (hasUdtResources || computeForcesUdtChain)
                 ? envIdentifier + "_legacy" : envIdentifier;
-            var legacyAppIdentifier = (hasUdtResources || hasComputeResources)
+            var legacyAppIdentifier = (hasUdtResources || computeForcesUdtChain)
                 ? appIdentifier + "_legacy" : appIdentifier;
 
             legacyEnvConstruct = CreateLegacyEnvironmentConstruct(
@@ -172,10 +179,13 @@ internal sealed class RadiusInfrastructureBuilder
             instanceParents[typeInstance] = (parentEnv, parentApp);
         }
 
-        // 5. Container workloads (always parented to the UDT application — and
-        // `appConstruct` is guaranteed non-null here because any compute resource
-        // forces UDT emission above).
+        // 5. Container workloads. By default, route to the UDT compute container
+        // type parented to the UDT application. When `WithLegacyContainers()` is
+        // set, route to legacy `Applications.Core/containers` parented to the
+        // legacy application instead — useful when the target Radius install
+        // has no recipe registered for `Radius.Compute/containers`.
         var containerConnectionTargets = new Dictionary<RadiusContainerConstruct, Dictionary<string, RadiusResourceTypeConstruct>>();
+        var legacyContainerConnectionTargets = new Dictionary<LegacyContainerConstruct, Dictionary<string, RadiusResourceTypeConstruct>>();
         foreach (var resource in computeResources)
         {
             var identifier = BicepPostProcessor.SanitizeIdentifier(resource.Name);
@@ -184,10 +194,20 @@ internal sealed class RadiusInfrastructureBuilder
 
             WarnIfImageMayNotPull(resource.Name, image);
 
-            var containerConstruct = CreateContainerConstruct(
-                identifier, resource.Name, image, appConstruct!, connectionTargets);
-            options.Containers.Add(containerConstruct);
-            containerConnectionTargets[containerConstruct] = connectionTargets;
+            if (useLegacyContainers)
+            {
+                var legacyContainerConstruct = CreateLegacyContainerConstruct(
+                    identifier, resource.Name, image, legacyAppConstruct!, connectionTargets);
+                options.LegacyContainers.Add(legacyContainerConstruct);
+                legacyContainerConnectionTargets[legacyContainerConstruct] = connectionTargets;
+            }
+            else
+            {
+                var containerConstruct = CreateContainerConstruct(
+                    identifier, resource.Name, image, appConstruct!, connectionTargets);
+                options.Containers.Add(containerConstruct);
+                containerConnectionTargets[containerConstruct] = connectionTargets;
+            }
         }
 
         // 6. Snapshot every identifier that rewiring depends on, then run
@@ -207,6 +227,10 @@ internal sealed class RadiusInfrastructureBuilder
             containerConnectionTargets.ToDictionary(
                 kv => kv.Key,
                 kv => kv.Value.ToDictionary(
+                    tkv => tkv.Key, tkv => tkv.Value.BicepIdentifier)),
+            legacyContainerConnectionTargets.ToDictionary(
+                kv => kv.Key,
+                kv => kv.Value.ToDictionary(
                     tkv => tkv.Key, tkv => tkv.Value.BicepIdentifier)));
 
         RunConfigureCallbacks(options);
@@ -216,7 +240,8 @@ internal sealed class RadiusInfrastructureBuilder
         // edits to references) alone.
         RewireIdReferences(options, appConstruct, envConstruct,
             legacyAppConstruct, legacyEnvConstruct, instanceParents,
-            containerConnectionTargets, identifierSnapshot);
+            containerConnectionTargets, legacyContainerConnectionTargets,
+            identifierSnapshot);
 
         return options;
     }
@@ -235,7 +260,8 @@ internal sealed class RadiusInfrastructureBuilder
         string? LegacyAppId,
         Dictionary<RadiusRecipePackConstruct, string> RecipePackIds,
         Dictionary<RadiusResourceTypeConstruct, (string EnvId, string AppId)> InstanceParentIds,
-        Dictionary<RadiusContainerConstruct, Dictionary<string, string>> ContainerConnectionTargetIds);
+        Dictionary<RadiusContainerConstruct, Dictionary<string, string>> ContainerConnectionTargetIds,
+        Dictionary<LegacyContainerConstruct, Dictionary<string, string>> LegacyContainerConnectionTargetIds);
 
     /// <summary>
     /// Returns <c>true</c> when <paramref name="resourceType"/> is a legacy
@@ -260,6 +286,7 @@ internal sealed class RadiusInfrastructureBuilder
         LegacyApplicationEnvironmentConstruct? legacyEnvConstruct,
         Dictionary<RadiusResourceTypeConstruct, (ProvisionableResource Env, ProvisionableResource App)> instanceParents,
         Dictionary<RadiusContainerConstruct, Dictionary<string, RadiusResourceTypeConstruct>> containerConnectionTargets,
+        Dictionary<LegacyContainerConstruct, Dictionary<string, RadiusResourceTypeConstruct>> legacyContainerConnectionTargets,
         IdentifierSnapshot snapshot)
     {
         // UDT env → recipe packs. Rebuild only if any builder-created pack was
@@ -360,6 +387,45 @@ internal sealed class RadiusInfrastructureBuilder
                 }
 
                 // Target was renamed — replace the stale connection entry.
+                container.Connections[connectionName] = new ConnectionConstruct
+                {
+                    Source = BuildIdExpression(targetConstruct),
+                };
+            }
+        }
+
+        // Legacy containers — rewire ApplicationId only if the legacy app was
+        // renamed; rewire each connection source only if its target was renamed.
+        foreach (var container in options.LegacyContainers)
+        {
+            if (!legacyContainerConnectionTargets.TryGetValue(container, out var targets))
+            {
+                continue;
+            }
+
+            if (legacyAppConstruct is not null && IdentifierChanged(legacyAppConstruct, snapshot.LegacyAppId))
+            {
+                container.ApplicationId = BuildIdExpression(legacyAppConstruct);
+            }
+
+            if (targets.Count == 0 ||
+                !snapshot.LegacyContainerConnectionTargetIds.TryGetValue(container, out var targetSnapIds))
+            {
+                continue;
+            }
+
+            foreach (var (connectionName, targetConstruct) in targets)
+            {
+                if (!targetSnapIds.TryGetValue(connectionName, out var snapTargetId))
+                {
+                    continue;
+                }
+
+                if (string.Equals(targetConstruct.BicepIdentifier, snapTargetId, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
                 container.Connections[connectionName] = new ConnectionConstruct
                 {
                     Source = BuildIdExpression(targetConstruct),
@@ -494,6 +560,7 @@ internal sealed class RadiusInfrastructureBuilder
     {
         var construct = new RadiusEnvironmentConstruct(identifier);
         construct.EnvironmentName = _environment.Name;
+        construct.KubernetesNamespace = _environment.Namespace;
         construct.RecipePacks.Add(BuildIdExpression(recipePackConstruct));
         return construct;
     }
@@ -748,6 +815,29 @@ internal sealed class RadiusInfrastructureBuilder
         construct.ContainerName = resourceName;
         construct.Image = image;
         construct.ApplicationId = BuildIdExpression(appConstruct);
+
+        if (connectionTargets.Count > 0)
+        {
+            foreach (var (name, targetConstruct) in connectionTargets)
+            {
+                var connectionConstruct = new ConnectionConstruct();
+                connectionConstruct.Source = BuildIdExpression(targetConstruct);
+                construct.Connections[name] = connectionConstruct;
+            }
+        }
+
+        return construct;
+    }
+
+    private static LegacyContainerConstruct CreateLegacyContainerConstruct(
+        string identifier, string resourceName, string image,
+        LegacyApplicationConstruct legacyAppConstruct,
+        Dictionary<string, RadiusResourceTypeConstruct> connectionTargets)
+    {
+        var construct = new LegacyContainerConstruct(identifier);
+        construct.ContainerName = resourceName;
+        construct.Image = image;
+        construct.ApplicationId = BuildIdExpression(legacyAppConstruct);
 
         if (connectionTargets.Count > 0)
         {

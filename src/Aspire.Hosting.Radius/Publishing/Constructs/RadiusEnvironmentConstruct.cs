@@ -13,6 +13,7 @@ public sealed class RadiusEnvironmentConstruct : ProvisionableResource
 {
     private BicepValue<string>? _name;
     private BicepList<string>? _recipePacks;
+    private BicepValue<string>? _kubernetesNamespace;
 
     /// <summary>The resource name.</summary>
     public BicepValue<string> EnvironmentName
@@ -28,6 +29,18 @@ public sealed class RadiusEnvironmentConstruct : ProvisionableResource
         set { Initialize(); _recipePacks!.Assign(value); }
     }
 
+    /// <summary>
+    /// Kubernetes namespace for the environment's Kubernetes provider. When set,
+    /// emits <c>properties.providers.kubernetes.namespace</c>, which Radius
+    /// requires to route built-in compute UDTs (e.g. <c>Radius.Compute/containers</c>)
+    /// to a Kubernetes cluster instead of falling back to the Azure provider.
+    /// </summary>
+    public BicepValue<string> KubernetesNamespace
+    {
+        get { Initialize(); return _kubernetesNamespace!; }
+        set { Initialize(); _kubernetesNamespace!.Assign(value); }
+    }
+
     /// <summary>Initializes a new <see cref="RadiusEnvironmentConstruct"/> with the given Bicep identifier.</summary>
     public RadiusEnvironmentConstruct(string bicepIdentifier)
         : base(bicepIdentifier, new Azure.Core.ResourceType("Radius.Core/environments"), "2025-08-01-preview")
@@ -39,5 +52,8 @@ public sealed class RadiusEnvironmentConstruct : ProvisionableResource
     {
         _name = DefineProperty<string>(nameof(EnvironmentName), ["name"]);
         _recipePacks = DefineListProperty<string>(nameof(RecipePacks), ["properties", "recipePacks"]);
+        _kubernetesNamespace = DefineProperty<string>(
+            nameof(KubernetesNamespace),
+            ["properties", "providers", "kubernetes", "namespace"]);
     }
 }

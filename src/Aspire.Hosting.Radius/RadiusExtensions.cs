@@ -107,4 +107,24 @@ public static partial class RadiusExtensions
 
     [GeneratedRegex("^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")]
     private static partial Regex DnsLabelPattern();
+
+    /// <summary>
+    /// Opts the environment into emitting container workloads as legacy
+    /// <c>Applications.Core/containers@2023-10-01-preview</c> resources instead
+    /// of <c>Radius.Compute/containers</c> (UDT). The legacy container type
+    /// ships with built-in Kubernetes deployment behaviour, so it deploys
+    /// without requiring a recipe to be registered in the target Radius
+    /// environment. Use this fallback when the target install does not yet
+    /// have a recipe registered for the <c>Radius.Compute/containers</c> UDT.
+    /// </summary>
+    /// <param name="builder">The Radius environment resource builder.</param>
+    /// <returns>A reference to the <see cref="IResourceBuilder{RadiusEnvironmentResource}"/>.</returns>
+    [AspireExportIgnore(Reason = "Radius extension — not part of the core Aspire ATS surface.")]
+    public static IResourceBuilder<RadiusEnvironmentResource> WithLegacyContainers(
+        this IResourceBuilder<RadiusEnvironmentResource> builder)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        builder.Resource.UseLegacyContainers = true;
+        return builder;
+    }
 }

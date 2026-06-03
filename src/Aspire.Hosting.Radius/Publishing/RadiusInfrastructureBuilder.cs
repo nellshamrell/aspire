@@ -71,6 +71,12 @@ internal sealed class RadiusInfrastructureBuilder
         // resource, producing duplicate noise on every publish.
         var (radiusResources, computeResources, resolvedTypes) = ClassifyResources();
 
+        // Cross-resource invariant: every cloud-managed selection requires the matching cloud
+        // provider to be configured on this environment. Validated here (not when
+        // WithManagedResource is called) so authoring is insensitive to builder call order —
+        // the provider may be configured before or after the selection (ASPIRERADIUS020).
+        ValidateManagedSelectionProviders();
+
         // 1. UDT recipe pack (created first so environment can reference its ID)
         var recipePackIdentifier = "recipepack";
         var udtRecipeEntries = new Dictionary<string, RecipeEntry>(StringComparer.Ordinal);
@@ -672,6 +678,48 @@ internal sealed class RadiusInfrastructureBuilder
             : null;
     }
 
+    /// <summary>
+    /// <c>ASPIRERADIUS020</c>: each cloud-managed selection on this environment requires the
+    /// matching cloud provider (<c>WithAzureProvider</c>/<c>WithAwsProvider</c>) to be configured.
+    /// Runs at publish time — when the environment's provider set is final — so the check is
+    /// independent of the order in which providers and selections were configured.
+    /// </summary>
+    private void ValidateManagedSelectionProviders()
+    {
+        var selections = _environment.Annotations
+            .OfType<Annotations.RadiusManagedResourcesAnnotation>()
+            .FirstOrDefault();
+
+        if (selections is null || selections.Selections.Count == 0)
+        {
+            return;
+        }
+
+        var providers = _environment.Annotations
+            .OfType<Annotations.RadiusCloudProvidersAnnotation>()
+            .FirstOrDefault();
+
+        foreach (var (resourceName, selection) in selections.Selections)
+        {
+            var configured = selection.Cloud switch
+            {
+                CloudProviders.RadiusCloud.Azure => providers?.Azure is not null,
+                CloudProviders.RadiusCloud.Aws => providers?.Aws is not null,
+                _ => false,
+            };
+
+            if (!configured)
+            {
+                var providerCall = selection.Cloud == CloudProviders.RadiusCloud.Azure ? "WithAzureProvider(...)" : "WithAwsProvider(...)";
+                throw new InvalidOperationException(
+                    $"Resource '{resourceName}' is marked cloud-managed for {selection.Cloud}, but no " +
+                    $"{selection.Cloud} provider is configured on Radius environment '{_environment.Name}'. " +
+                    $"Call {providerCall} on the environment to deploy cloud-managed resources for " +
+                    $"{selection.Cloud}. Diagnostic: ASPIRERADIUS020.");
+            }
+        }
+    }
+
     // Treat null and empty/whitespace recipe locations as "no location" (an in-cluster /
     // default-recipe instance) so divergence detection and per-instance binding agree on
     // what counts as a real recipe location.
@@ -721,7 +769,7 @@ internal sealed class RadiusInfrastructureBuilder
     // The legacy Applications.Core/environments schema carries cloud providers under the
     // same properties.providers.{azure,aws}.scope paths as the UDT environment. Apply them
     // here too so a pure-legacy publish (e.g. a managed Redis with no UDT compute) still
-    // emits the provider configuration that ValidateProviderConfigured requires.
+    // emits the provider configuration that the publish-time ASPIRERADIUS020 check requires.
     private void ApplyCloudProviders(LegacyApplicationEnvironmentConstruct construct)
     {
         var annotation = _environment.Annotations

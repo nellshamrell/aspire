@@ -97,6 +97,33 @@ redacted from any logged command line.
 
 See [specs/003-cloud-providers/quickstart.md](../../../specs/003-cloud-providers/quickstart.md) for an end-to-end walkthrough.
 
+## Diagnostics
+
+The package uses the `ASPIRERADIUS` diagnostic prefix for two distinct mechanisms, with
+disjoint numeric ranges reserved so the IDs never collide:
+
+| Range | Mechanism | Surfaced as |
+|-------|-----------|-------------|
+| `ASPIRERADIUS001`–`ASPIRERADIUS009` | Compile-time analyzer diagnostics for experimental APIs | `[Experimental]` warnings (suppressible), documented at `https://aka.ms/aspire/diagnostics/<id>` |
+| `ASPIRERADIUS010`–`ASPIRERADIUS019` | Cloud-provider configuration errors | Thrown `InvalidOperationException` (message includes the ID) |
+| `ASPIRERADIUS020`–`ASPIRERADIUS029` | Cloud-managed resource (`WithManagedResource`) validation | Thrown `ArgumentException` (config time) / `InvalidOperationException` (publish time) |
+
+Runtime validation codes:
+
+| Code | When | Meaning |
+|------|------|---------|
+| `ASPIRERADIUS010` | Provider config | A cloud-provider credential callback did not select a credential. |
+| `ASPIRERADIUS011` | Provider config | Conflicting cloud-provider credentials across environments sharing a Radius installation. |
+| `ASPIRERADIUS020` | Publish | A resource is marked cloud-managed for a cloud whose provider is not configured on the environment. Validated at publish time, so provider/selection call order does not matter. |
+| `ASPIRERADIUS022` | Config | A compute workload (project/container, or a resource overridden to the compute container type) cannot be marked cloud-managed. |
+| `ASPIRERADIUS023` | Config | A cloud-managed recipe is missing its `RecipeLocation`. |
+| `ASPIRERADIUS024` | Config | A child resource cannot be marked cloud-managed directly; mark its parent instead. |
+| `ASPIRERADIUS025` | Config | The resource does not map to a supported Radius backing resource type. |
+| `ASPIRERADIUS026` | Publish | Multiple instances of one user-defined (`Radius.*`) type resolve to different recipes; Radius binds one recipe per type per environment. |
+
+> `ASPIRERADIUS021` was retired: the cloud is taken from the explicit `RadiusCloud` argument
+> rather than inferred from the recipe location, so there is no cloud/recipe conflict to flag.
+
 ## Additional documentation
 
 * https://docs.radapp.io/

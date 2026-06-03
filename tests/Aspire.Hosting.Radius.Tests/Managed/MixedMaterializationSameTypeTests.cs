@@ -85,7 +85,7 @@ public class MixedMaterializationSameTypeTests
     }
 
     [Fact]
-    public void SameUdtType_TwoManaged_DifferentRecipes_BothBindPerInstance()
+    public void SameUdtType_TwoManaged_DifferentRecipes_ThrowsAspireRadius026()
     {
         using var builder = TestDistributedApplicationBuilder.Create(DistributedApplicationOperation.Publish);
         var env = builder.AddRadiusEnvironment("myenv")
@@ -101,13 +101,38 @@ public class MixedMaterializationSameTypeTests
             .WithReference(sqlB);
 
         using var app = builder.Build();
+
+        // Radius user-defined types bind exactly one recipe per type per environment (recipe
+        // packs map a type to a single recipe; no per-instance override or named recipes). Two
+        // UDT instances of the same type resolving to different recipes cannot be represented,
+        // so the publish must fail rather than silently deploy both with the wrong recipe.
+        var ex = Assert.Throws<InvalidOperationException>(() => GenerateBicep(app));
+        Assert.Contains("ASPIRERADIUS026", ex.Message);
+        Assert.Contains("sqla", ex.Message);
+        Assert.Contains("sqlb", ex.Message);
+    }
+
+    [Fact]
+    public void SameUdtType_TwoManaged_SameRecipe_BindsAtTypeLevel()
+    {
+        using var builder = TestDistributedApplicationBuilder.Create(DistributedApplicationOperation.Publish);
+        var env = builder.AddRadiusEnvironment("myenv")
+            .WithAzureProvider(Sub, Rg, azure => azure.WithWorkloadIdentity(Tenant, Client));
+
+        var sqlA = builder.AddSqlServer("sqla");
+        var sqlB = builder.AddSqlServer("sqlb");
+        env.WithManagedResource(sqlA, RadiusCloud.Azure, new RadiusRecipe { RecipeLocation = AzureSqlRecipe });
+        env.WithManagedResource(sqlB, RadiusCloud.Azure, new RadiusRecipe { RecipeLocation = AzureSqlRecipe });
+
+        builder.AddContainer("api", "myapp/api", "latest")
+            .WithReference(sqlA)
+            .WithReference(sqlB);
+
+        using var app = builder.Build();
         var bicep = GenerateBicep(app);
 
-        // Both managed recipes must materialize at the instance level. Before the divergence
-        // fix, the two UDT instances overwrote the shared recipe-pack entry for the type and
-        // the last one won.
+        // Both instances share one recipe, so the type binds it once through the recipe pack.
         Assert.Contains(AzureSqlRecipe, bicep);
-        Assert.Contains(AzureSqlRecipeV2, bicep);
     }
 
     [Fact]

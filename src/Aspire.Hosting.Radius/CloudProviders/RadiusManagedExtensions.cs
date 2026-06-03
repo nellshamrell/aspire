@@ -31,6 +31,12 @@ public static class RadiusManagedExtensions
     /// recipes (or mixing a cloud-managed instance with a custom in-cluster recipe on the same
     /// type) is unsupported and fails at publish time with <c>ASPIRERADIUS026</c>. Legacy
     /// <c>Applications.*</c> types are exempt because they support multiple named recipes.
+    /// <para>
+    /// The selected <paramref name="cloud"/> must have a matching provider configured on the
+    /// environment (<c>WithAzureProvider</c>/<c>WithAwsProvider</c>). That check runs at publish
+    /// time (not when this method is called), so the provider can be configured before or after
+    /// this call; a missing provider fails the publish with <c>ASPIRERADIUS020</c>.
+    /// </para>
     /// </remarks>
     /// <param name="builder">The Radius environment to attach the selection to.</param>
     /// <param name="resource">The backing (non-compute) resource to make cloud-managed.</param>
@@ -40,10 +46,8 @@ public static class RadiusManagedExtensions
     /// <exception cref="ArgumentNullException"><paramref name="builder"/>, <paramref name="resource"/>, or <paramref name="recipe"/> is null.</exception>
     /// <exception cref="ArgumentException">
     /// The target is a child resource (<c>ASPIRERADIUS024</c>), a compute workload
-    /// (<c>ASPIRERADIUS022</c>), or not a supported backing resource (<c>ASPIRERADIUS025</c>);
-    /// the recipe has no <see cref="RadiusRecipe.RecipeLocation"/> (<c>ASPIRERADIUS023</c>);
-    /// the selected cloud has no provider configured on this environment (<c>ASPIRERADIUS020</c>);
-    /// or the recipe's declared cloud conflicts with <paramref name="cloud"/> (<c>ASPIRERADIUS021</c>).
+    /// (<c>ASPIRERADIUS022</c>), or not a supported backing resource (<c>ASPIRERADIUS025</c>); or
+    /// the recipe has no <see cref="RadiusRecipe.RecipeLocation"/> (<c>ASPIRERADIUS023</c>).
     /// </exception>
     // [AspireExportIgnore]: the open-generic `IResourceBuilder<IResource>` target
     // parameter is part of the public C# API surface but Aspire's ATS exporter
@@ -64,12 +68,15 @@ public static class RadiusManagedExtensions
         var target = resource.Resource;
 
         // Configuration-time validation (FR-003/FR-004/FR-014). Fails fast with a
-        // contract diagnostic ID before any publish/deploy work.
-        ManagedValidation.Validate(environment, target, cloud, recipe, nameof(resource));
+        // contract diagnostic ID for input-only rules. Cross-resource invariants that
+        // depend on the environment's final state — the matching cloud provider being
+        // configured (ASPIRERADIUS020) — are validated at publish time so this call is
+        // insensitive to builder ordering (e.g. provider configured after this call).
+        ManagedValidation.Validate(target, recipe, nameof(resource));
 
         // Record/replace the selection (last-write-wins per resource per environment).
         var annotation = RadiusManagedResourcesAnnotation.GetOrAdd(environment);
-        annotation.Selections[target.Name] = new ManagedResourceSelection(target, cloud, recipe);
+        annotation.Selections[target.Name] = new ManagedResourceSelection(cloud, recipe);
 
         // Declarative dashboard marker (FR-013). Remove any prior marker for this
         // environment so a repeated call reflects the latest selection.

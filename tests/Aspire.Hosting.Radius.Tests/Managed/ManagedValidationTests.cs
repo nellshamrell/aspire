@@ -16,39 +16,25 @@ public class ManagedValidationTests
     private const string Region = "us-west-2";
     private const string Arn = "arn:aws:iam::123456789012:role/radius-irsa";
     private const string AzureRecipe = "br:reg.azurecr.io/recipes/azure-rediscache:latest";
-    private const string AwsRecipe = "br:public.ecr.aws/recipes/aws-elasticache:latest";
 
     private static IResourceBuilder<RadiusEnvironmentResource> AzureEnv(IDistributedApplicationBuilder builder)
         => builder.AddRadiusEnvironment("radius")
             .WithAzureProvider(Sub, Rg, azure => azure.WithWorkloadIdentity(Tenant, Client));
 
     [Fact]
-    public void Managed_ForCloudWithoutProvider_Throws_ASPIRERADIUS020()
+    public void Managed_BeforeProviderConfigured_DoesNotThrow_AtConfigTime()
     {
         var builder = DistributedApplication.CreateBuilder();
-        var env = builder.AddRadiusEnvironment("radius"); // no provider configured
+        var env = builder.AddRadiusEnvironment("radius"); // no provider configured yet
         var cache = builder.AddRedis("cache");
 
-        var ex = Assert.Throws<ArgumentException>(() =>
+        // Provider-configured (ASPIRERADIUS020) is a cross-resource invariant validated at
+        // publish time, so marking a resource cloud-managed before (or without) configuring
+        // the provider must not throw when WithManagedResource is called.
+        var ex = Record.Exception(() =>
             env.WithManagedResource(cache, RadiusCloud.Azure, new RadiusRecipe { RecipeLocation = AzureRecipe }));
 
-        Assert.Equal("resource", ex.ParamName);
-        Assert.Contains("ASPIRERADIUS020", ex.Message);
-        Assert.Contains("cache", ex.Message);
-    }
-
-    [Fact]
-    public void Managed_AzureSelection_AwsProviderOnly_Throws_ASPIRERADIUS020()
-    {
-        var builder = DistributedApplication.CreateBuilder();
-        var env = builder.AddRadiusEnvironment("radius")
-            .WithAwsProvider(Account, Region, aws => aws.WithIrsa(Arn));
-        var cache = builder.AddRedis("cache");
-
-        var ex = Assert.Throws<ArgumentException>(() =>
-            env.WithManagedResource(cache, RadiusCloud.Azure, new RadiusRecipe { RecipeLocation = AzureRecipe }));
-
-        Assert.Contains("ASPIRERADIUS020", ex.Message);
+        Assert.Null(ex);
     }
 
     [Fact]
@@ -67,43 +53,52 @@ public class ManagedValidationTests
     }
 
     [Fact]
-    public void Managed_CloudConflictsWithRecipe_Throws_ASPIRERADIUS021()
+    public void Managed_OnResourceWithComputeTypeOverride_Throws_ASPIRERADIUS022()
     {
         var builder = DistributedApplication.CreateBuilder();
         var env = AzureEnv(builder);
-        var cache = builder.AddRedis("cache");
 
-        // Cloud is Azure but the recipe location clearly targets AWS.
+        // A backing resource retargeted to the compute Containers type via TypeOverride
+        // resolves to compute at publish, so it must be rejected as compute here rather than
+        // slipping past both ASPIRERADIUS022 and ASPIRERADIUS025.
+        var cache = builder.AddRedis("cache")
+            .PublishAsRadiusResource(r => r.TypeOverride = new RadiusResourceTypeReference("Radius.Compute/containers", "2025-08-01-preview"));
+
         var ex = Assert.Throws<ArgumentException>(() =>
-            env.WithManagedResource(cache, RadiusCloud.Azure, new RadiusRecipe { RecipeLocation = AwsRecipe }));
+            env.WithManagedResource(cache, RadiusCloud.Azure, new RadiusRecipe { RecipeLocation = AzureRecipe }));
 
-        Assert.Contains("ASPIRERADIUS021", ex.Message);
+        Assert.Equal("resource", ex.ParamName);
+        Assert.Contains("ASPIRERADIUS022", ex.Message);
+        Assert.Contains("cache", ex.Message);
     }
 
     [Fact]
-    public void Managed_AwsSelection_AwsProviderConfigured_Succeeds()
+    public void Managed_AwsRecipeInAzureRegistry_DoesNotThrow()
     {
         var builder = DistributedApplication.CreateBuilder();
         var env = builder.AddRadiusEnvironment("radius")
             .WithAwsProvider(Account, Region, aws => aws.WithIrsa(Arn));
-        var storage = builder.AddRedis("storage");
+        var cache = builder.AddRedis("cache");
 
+        // An AWS recipe published to an Azure Container Registry has a host containing
+        // "azure" (azurecr.io). The cloud is taken from the explicit RadiusCloud argument,
+        // never inferred from the location string, so this valid config must not throw.
         var ex = Record.Exception(() =>
-            env.WithManagedResource(storage, RadiusCloud.Aws, new RadiusRecipe { RecipeLocation = AwsRecipe }));
+            env.WithManagedResource(cache, RadiusCloud.Aws, new RadiusRecipe { RecipeLocation = "br:reg.azurecr.io/recipes/aws-elasticache:latest" }));
 
         Assert.Null(ex);
     }
 
     [Fact]
-    public void Managed_CloudAgnosticRecipe_DoesNotTrigger_ASPIRERADIUS021()
+    public void Managed_AzureRecipeInAwsRegistry_DoesNotThrow()
     {
         var builder = DistributedApplication.CreateBuilder();
         var env = AzureEnv(builder);
         var cache = builder.AddRedis("cache");
 
-        // Location names neither cloud → no declared cloud → no conflict.
+        // The inverse: an Azure recipe hosted on a public ECR (host contains "aws").
         var ex = Record.Exception(() =>
-            env.WithManagedResource(cache, RadiusCloud.Azure, new RadiusRecipe { RecipeLocation = "br:reg.example.io/recipes/rediscache:latest" }));
+            env.WithManagedResource(cache, RadiusCloud.Azure, new RadiusRecipe { RecipeLocation = "br:public.ecr.aws/recipes/azure-rediscache:latest" }));
 
         Assert.Null(ex);
     }

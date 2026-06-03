@@ -35,7 +35,6 @@ public class WithManagedResourceTests
         var selection = Assert.Contains("cache", (IDictionary<string, ManagedResourceSelection>)annotation.Selections);
         Assert.Equal(RadiusCloud.Azure, selection.Cloud);
         Assert.Same(recipe, selection.Recipe);
-        Assert.Same(cache.Resource, selection.TargetResource);
     }
 
     [Fact]

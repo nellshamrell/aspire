@@ -84,7 +84,18 @@ internal static class ManagedValidation
     /// </summary>
     internal static void ValidateSupportedBackingResource(IResource target, string paramName)
     {
-        if (!ResourceTypeMapper.IsBackingResource(target))
+        // A custom TypeOverride wins over the built-in mapping during publishing
+        // (RadiusInfrastructureBuilder.ResolveResourceType checks it before the mapper), so
+        // honor it here too: an override to any non-compute type is a valid backing resource.
+        // Without this, a resource that only maps via an override would pass at publish time
+        // but be falsely rejected at configuration time.
+        var typeOverride = target.Annotations
+            .OfType<RadiusResourceCustomizationAnnotation>()
+            .LastOrDefault()?.Customization.TypeOverride;
+        var hasNonComputeOverride = typeOverride is not null
+            && !string.Equals(typeOverride.Type, RadiusResourceTypes.Containers, StringComparison.Ordinal);
+
+        if (!hasNonComputeOverride && !ResourceTypeMapper.IsBackingResource(target))
         {
             throw new ArgumentException(
                 $"Resource '{target.Name}' (type '{target.GetType().Name}') does not map to a Radius " +

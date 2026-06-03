@@ -169,8 +169,10 @@ internal sealed class ResourceTypeMapper
     /// This is a side-effect-free probe used by configuration-time validation
     /// (<c>WithManagedResource</c>); unlike <see cref="MapResource"/> it never logs, so
     /// validation does not emit the per-resource mapping diagnostics that belong to the
-    /// publish path. Custom type overrides (<see cref="RadiusResourceCustomization.TypeOverride"/>)
-    /// are not considered here because they are resolved later during publishing.
+    /// publish path. This method reflects only the built-in mapping table; custom type
+    /// overrides (<see cref="RadiusResourceCustomization.TypeOverride"/>) are handled by the
+    /// caller (<c>ManagedValidation.ValidateSupportedBackingResource</c>) so that an
+    /// override-only backing resource is not falsely rejected at configuration time.
     /// </remarks>
     internal static bool IsBackingResource(IResource resource)
     {

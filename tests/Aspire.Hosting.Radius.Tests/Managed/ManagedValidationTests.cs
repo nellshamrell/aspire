@@ -167,4 +167,22 @@ public class ManagedValidationTests
         Assert.Contains("ASPIRERADIUS025", ex.Message);
         Assert.Contains("param", ex.Message);
     }
+
+    [Fact]
+    public void Managed_OnResourceWithNonComputeTypeOverride_DoesNotThrow_ASPIRERADIUS025()
+    {
+        var builder = DistributedApplication.CreateBuilder();
+        var env = AzureEnv(builder);
+
+        // A resource with no built-in backing mapping, mapped via a custom TypeOverride to a
+        // non-compute UDT. Publish resolves the override before the mapper, so configuration-time
+        // validation must honor it too rather than rejecting with ASPIRERADIUS025.
+        var custom = builder.AddParameter("param", "value")
+            .PublishAsRadiusResource(r => r.TypeOverride = new RadiusResourceTypeReference("MyOrg.Custom/myCache", "2025-01-01"));
+
+        var ex = Record.Exception(() =>
+            env.WithManagedResource(custom, RadiusCloud.Azure, new RadiusRecipe { RecipeLocation = AzureRecipe }));
+
+        Assert.Null(ex);
+    }
 }

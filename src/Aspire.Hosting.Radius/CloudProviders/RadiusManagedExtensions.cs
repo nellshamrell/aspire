@@ -25,6 +25,13 @@ public static class RadiusManagedExtensions
     /// resources may be cloud-managed. The selection is scoped to this environment, so
     /// the same resource can be in-cluster in another environment.
     /// </summary>
+    /// <remarks>
+    /// Radius binds exactly one recipe per user-defined (<c>Radius.*</c>) resource type per
+    /// environment. Marking multiple resources of the same user-defined type with different
+    /// recipes (or mixing a cloud-managed instance with a custom in-cluster recipe on the same
+    /// type) is unsupported and fails at publish time with <c>ASPIRERADIUS026</c>. Legacy
+    /// <c>Applications.*</c> types are exempt because they support multiple named recipes.
+    /// </remarks>
     /// <param name="builder">The Radius environment to attach the selection to.</param>
     /// <param name="resource">The backing (non-compute) resource to make cloud-managed.</param>
     /// <param name="cloud">The explicit target cloud (Azure or AWS).</param>

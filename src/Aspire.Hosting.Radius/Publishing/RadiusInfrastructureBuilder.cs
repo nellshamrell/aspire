@@ -77,17 +77,18 @@ internal sealed class RadiusInfrastructureBuilder
         var legacyRecipeEntries = new Dictionary<string, Dictionary<string, RecipeEntry>>(StringComparer.Ordinal);
         var typeInstancesByResourceName = new Dictionary<string, RadiusResourceTypeConstruct>(StringComparer.Ordinal);
 
-        // Radius binds one recipe per resource type per environment (UDT types via the shared
-        // recipe pack, legacy types via inline named recipes). When the instances of a single
-        // type resolve to *different* effective recipes, that one shared type-level binding
-        // cannot represent all of them, so each instance that carries its own recipe location
-        // binds per instance (UDT: an instance-level recipe location; legacy: a distinct named
-        // recipe) while the type-level entry keeps the in-cluster default. Compute the set of
-        // distinct effective recipe locations per type so the "divergent" case can be detected
-        // below (FR-007, INV-5). A null entry means an in-cluster / default-recipe instance.
-        // Both cloud-managed selections and customization recipes count, so a custom in-cluster
-        // sibling of a managed resource (or two managed instances with different recipes) no
-        // longer silently clobbers the shared type entry.
+        // Radius binds one recipe per resource type per environment. Legacy Applications.* types
+        // resolve that binding through the legacy environment, which still supports multiple
+        // *named* recipes per type, so divergent legacy instances bind per instance (a distinct
+        // named recipe) while the type-level entry keeps the in-cluster default. User-defined
+        // (Radius.*) types resolve their binding through the shared recipe pack, which maps a
+        // type to exactly one recipe: UDT types support neither per-instance recipe overrides
+        // nor named recipes, so instances of one UDT type cannot diverge to different recipes.
+        // That divergence is rejected for UDT types below (see ASPIRERADIUS026). Compute the set
+        // of distinct effective recipe locations per type so the "divergent" case can be detected.
+        // A null entry means an in-cluster / default-recipe instance. Both cloud-managed
+        // selections and customization recipes count, so a custom in-cluster sibling of a managed
+        // resource (or two managed instances with different recipes) is detected (FR-007, INV-5).
         var effectiveLocationsByType = new Dictionary<string, HashSet<string?>>(StringComparer.Ordinal);
         foreach (var resource in radiusResources)
         {
@@ -106,6 +107,32 @@ internal sealed class RadiusInfrastructureBuilder
         bool IsDivergentType(string resourceType)
             => effectiveLocationsByType.TryGetValue(resourceType, out var locations) && locations.Count > 1;
 
+        // Reject divergence on user-defined (Radius.*) types. Radius recipe packs bind exactly one
+        // recipe per resource type per environment, and UDT types support neither per-instance
+        // recipe overrides nor named recipes. Emitting a `properties.recipe.recipeLocation` per UDT
+        // instance is silently ignored by Radius — the instance would deploy with the type's single
+        // pack recipe, not its intended one — so a divergent UDT type would deploy incorrectly. Fail
+        // the publish with a clear diagnostic instead. Legacy Applications.* types are exempt because
+        // their environment still supports named recipes (see the per-instance legacy binding below).
+        // See: https://github.com/radius-project/radius/blob/main/eng/design-notes/extensibility/2025-06-compute-extensibility-feature-spec.md
+        // ("only one Recipe per resource type is allowed per Environment") and
+        // https://github.com/radius-project/radius/blob/main/eng/design-notes/extensibility/2025-02-user-defined-resource-type-feature-spec.md
+        foreach (var (resourceType, locations) in effectiveLocationsByType)
+        {
+            if (locations.Count > 1 && !IsLegacyResourceType(resourceType))
+            {
+                var conflicting = radiusResources
+                    .Where(r => string.Equals(resolvedTypes[r].ResourceType, resourceType, StringComparison.Ordinal))
+                    .Select(r => r.Name);
+                throw new InvalidOperationException(
+                    $"Resources of Radius type '{resourceType}' ({string.Join(", ", conflicting)}) resolve to " +
+                    "different recipes, but Radius binds exactly one recipe per resource type per environment for " +
+                    "user-defined types (per-instance recipe overrides and named recipes are not supported). Use the " +
+                    "same recipe (or cloud-managed selection) for all instances of this type, or model them as " +
+                    "different resource types. Diagnostic: ASPIRERADIUS026.");
+            }
+        }
+
         // Collect recipe entries: UDT types go into the recipe pack, legacy
         // Applications.* types are stashed for inline emission on the legacy env.
         foreach (var resource in radiusResources)
@@ -118,30 +145,27 @@ internal sealed class RadiusInfrastructureBuilder
             // to the cloud-targeting recipe (FR-008).
             var managedRecipe = GetManagedRecipe(resource);
             var effectiveRecipe = managedRecipe ?? customization?.Recipe;
-            var bindPerInstance = NormalizeRecipeLocation(effectiveRecipe?.RecipeLocation) is not null
-                && IsDivergentType(resourceType);
 
             if (IsLegacyResourceType(resourceType))
             {
-                // A nameless effective recipe (e.g. a cloud-managed, location-only recipe) in a
-                // divergent type needs a synthetic per-instance recipe name (its resource name)
-                // so it doesn't collapse onto the shared "default" recipe (FR-007, INV-5). A
-                // recipe that already carries an explicit Name keeps it, so distinct named
-                // recipes for the same legacy type still register side by side.
+                // Legacy types can diverge: when this type's instances resolve to different
+                // recipes, a nameless effective recipe (e.g. a cloud-managed, location-only
+                // recipe) needs a synthetic per-instance recipe name (its resource name) so it
+                // doesn't collapse onto the shared "default" recipe (FR-007, INV-5). A recipe
+                // that already carries an explicit Name keeps it, so distinct named recipes for
+                // the same legacy type still register side by side.
+                var bindPerInstance = NormalizeRecipeLocation(effectiveRecipe?.RecipeLocation) is not null
+                    && IsDivergentType(resourceType);
                 var recipeNameOverride = bindPerInstance && string.IsNullOrEmpty(effectiveRecipe?.Name)
                     ? resource.Name
                     : null;
                 AddLegacyRecipeEntry(legacyRecipeEntries, resourceType, effectiveRecipe, recipeNameOverride);
             }
-            else if (bindPerInstance)
-            {
-                // Divergent materialization for this UDT type: keep the in-cluster default in
-                // the shared pack; this instance binds its recipe at the instance level (see
-                // the resource-instance loop below).
-                AddRecipeEntry(udtRecipeEntries, resourceType, recipe: null);
-            }
             else
             {
+                // UDT types bind exactly one recipe per type via the shared recipe pack.
+                // Divergence was already rejected above (ASPIRERADIUS026), so every instance of
+                // this type shares the same effective recipe.
                 AddRecipeEntry(udtRecipeEntries, resourceType, effectiveRecipe);
             }
         }
@@ -222,22 +246,19 @@ internal sealed class RadiusInfrastructureBuilder
             var customization = GetCustomization(resource);
             var isLegacy = IsLegacyResourceType(resourceType);
 
-            // Per-instance recipe binding: a cloud-managed selection wins over the
-            // resource's customization recipe so same-type divergent materialization
-            // (instances with different recipes) resolves per instance (FR-007, INV-5).
+            // Per-instance recipe binding applies only to legacy types: a cloud-managed selection
+            // wins over the resource's customization recipe, and divergent legacy instances (same
+            // type, different recipes) reference a distinct named recipe (FR-007, INV-5). UDT
+            // divergence was rejected earlier (ASPIRERADIUS026), so UDT instances always bind their
+            // type's single recipe through the recipe pack and never carry an instance-level recipe.
             var managedRecipe = GetManagedRecipe(resource);
             var effectiveRecipe = managedRecipe ?? customization?.Recipe;
 
-            // When this type is divergent (its instances don't all share one effective recipe),
-            // the shared default recipe stays on the in-cluster recipe, so bind this instance's
-            // recipe per instance: UDT instances carry the recipe location directly; legacy
-            // instances reference a distinct recipe name.
+            // Legacy instances reference a synthetic per-instance recipe name (their resource
+            // name) only when the type is divergent and the effective recipe is nameless; a recipe
+            // with an explicit Name is referenced by that Name (see the recipe-collection loop above).
             var bindPerInstance = NormalizeRecipeLocation(effectiveRecipe?.RecipeLocation) is not null
                 && IsDivergentType(resourceType);
-            var bindRecipeLocationOnInstance = !isLegacy && bindPerInstance;
-            // Legacy instances reference a synthetic per-instance recipe name (their resource
-            // name) only when the effective recipe is nameless; a recipe with an explicit Name
-            // is referenced by that Name (see the recipe-collection loop above).
             var instanceRecipeNameOverride = isLegacy && bindPerInstance && string.IsNullOrEmpty(effectiveRecipe?.Name)
                 ? resource.Name
                 : null;
@@ -247,7 +268,7 @@ internal sealed class RadiusInfrastructureBuilder
 
             var typeInstance = CreateResourceTypeConstruct(
                 identifier, resource.Name, resourceType, apiVersion,
-                parentApp, parentEnv, effectiveRecipe, bindRecipeLocationOnInstance,
+                parentApp, parentEnv, effectiveRecipe,
                 instanceRecipeNameOverride);
             options.ResourceTypeInstances.Add(typeInstance);
             typeInstancesByResourceName[resource.Name] = typeInstance;
@@ -740,8 +761,7 @@ internal sealed class RadiusInfrastructureBuilder
     private static RadiusResourceTypeConstruct CreateResourceTypeConstruct(
         string identifier, string resourceName, string resourceType, string apiVersion,
         ProvisionableResource appConstruct, ProvisionableResource envConstruct,
-        RadiusRecipe? recipe, bool bindRecipeLocationOnInstance = false,
-        string? instanceRecipeNameOverride = null)
+        RadiusRecipe? recipe, string? instanceRecipeNameOverride = null)
     {
         var construct = new RadiusResourceTypeConstruct(identifier, resourceType, apiVersion);
         construct.ResourceName = resourceName;
@@ -759,14 +779,6 @@ internal sealed class RadiusInfrastructureBuilder
 
         if (recipe is not null)
         {
-            // Divergent same-type materialization on a UDT type: bind this instance directly
-            // to its cloud recipe location because the shared recipe-pack entry for the
-            // type stays on the in-cluster default (FR-007, INV-5).
-            if (bindRecipeLocationOnInstance && !string.IsNullOrEmpty(recipe.RecipeLocation))
-            {
-                construct.RecipeLocation = recipe.RecipeLocation;
-            }
-
             var hasExplicitName = !string.IsNullOrEmpty(recipe.Name);
             var hasParameters = recipe.Parameters.Count > 0;
 

@@ -18,7 +18,6 @@ public sealed class RadiusResourceTypeConstruct : ProvisionableResource
     private BicepValue<string>? _applicationId;
     private BicepValue<string>? _environmentId;
     private BicepValue<string>? _recipeName;
-    private BicepValue<string>? _recipeLocation;
     private BicepDictionary<object>? _recipeParameters;
 
     /// <summary>The resource name.</summary>
@@ -47,17 +46,6 @@ public sealed class RadiusResourceTypeConstruct : ProvisionableResource
     {
         get { Initialize(); return _recipeName!; }
         set { Initialize(); _recipeName!.Assign(value); }
-    }
-
-    /// <summary>
-    /// The per-instance recipe template location. Used to bind a single resource
-    /// instance to a cloud-targeting recipe when its type's shared recipe-pack entry
-    /// stays on the in-cluster default (same-type mixed materialization, FR-007/INV-5).
-    /// </summary>
-    public BicepValue<string> RecipeLocation
-    {
-        get { Initialize(); return _recipeLocation!; }
-        set { Initialize(); _recipeLocation!.Assign(value); }
     }
 
     /// <summary>Recipe parameters dictionary for typed parameter values.</summary>
@@ -89,7 +77,6 @@ public sealed class RadiusResourceTypeConstruct : ProvisionableResource
         _applicationId = DefineProperty<string>(nameof(ApplicationId), ["properties", "application"]);
         _environmentId = DefineProperty<string>(nameof(EnvironmentId), ["properties", "environment"]);
         _recipeName = DefineProperty<string>(nameof(RecipeName), ["properties", "recipe", "name"]);
-        _recipeLocation = DefineProperty<string>(nameof(RecipeLocation), ["properties", "recipe", "recipeLocation"]);
         _recipeParameters = DefineDictionaryProperty<object>(nameof(RecipeParameters), ["properties", "recipe", "parameters"]);
     }
 }

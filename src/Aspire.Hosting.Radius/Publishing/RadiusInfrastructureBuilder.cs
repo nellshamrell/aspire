@@ -77,6 +77,25 @@ internal sealed class RadiusInfrastructureBuilder
         var legacyRecipeEntries = new Dictionary<string, Dictionary<string, RecipeEntry>>(StringComparer.Ordinal);
         var typeInstancesByResourceName = new Dictionary<string, RadiusResourceTypeConstruct>(StringComparer.Ordinal);
 
+        // A Radius resource type keeps its in-cluster (local-dev) default recipe
+        // whenever at least one of its instances is in-cluster. Radius binds one recipe
+        // per type per environment, so a cloud-managed instance of such a "mixed" type
+        // cannot replace the shared default without clobbering its in-cluster sibling.
+        // Instead it binds the cloud recipe per instance (FR-007, INV-5): UDT types via
+        // an instance-level recipe location, legacy types via a distinct named recipe.
+        // Types that are *entirely* cloud-managed bind their default directly to the
+        // cloud recipe.
+        var typesWithInClusterInstance = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var resource in radiusResources)
+        {
+            var rt = resolvedTypes[resource].ResourceType;
+            var recipeLocation = (GetManagedRecipe(resource) ?? GetCustomization(resource)?.Recipe)?.RecipeLocation;
+            if (recipeLocation is null)
+            {
+                typesWithInClusterInstance.Add(rt);
+            }
+        }
+
         // Collect recipe entries: UDT types go into the recipe pack, legacy
         // Applications.* types are stashed for inline emission on the legacy env.
         foreach (var resource in radiusResources)
@@ -84,13 +103,32 @@ internal sealed class RadiusInfrastructureBuilder
             var (resourceType, _) = resolvedTypes[resource];
             var customization = GetCustomization(resource);
 
+            // A cloud-managed selection on this environment overrides the resource's
+            // own customization recipe (and the local-dev default) so the type binds
+            // to the cloud-targeting recipe (FR-008).
+            var managedRecipe = GetManagedRecipe(resource);
+            var effectiveRecipe = managedRecipe ?? customization?.Recipe;
+            var isMixedManaged = managedRecipe?.RecipeLocation is not null
+                && typesWithInClusterInstance.Contains(resourceType);
+
             if (IsLegacyResourceType(resourceType))
             {
-                AddLegacyRecipeEntry(legacyRecipeEntries, resourceType, customization);
+                // A cloud-managed legacy resource in a mixed type registers its cloud
+                // recipe under a distinct recipe name (its resource name) so it doesn't
+                // collide with the type's in-cluster "default" recipe (FR-007, INV-5).
+                var recipeNameOverride = isMixedManaged ? resource.Name : null;
+                AddLegacyRecipeEntry(legacyRecipeEntries, resourceType, effectiveRecipe, recipeNameOverride);
+            }
+            else if (isMixedManaged)
+            {
+                // Mixed materialization for this UDT type: keep the in-cluster default in
+                // the shared pack; this managed instance binds its cloud recipe at the
+                // instance level (see the resource-instance loop below).
+                AddRecipeEntry(udtRecipeEntries, resourceType, recipe: null);
             }
             else
             {
-                AddRecipeEntry(udtRecipeEntries, resourceType, customization);
+                AddRecipeEntry(udtRecipeEntries, resourceType, effectiveRecipe);
             }
         }
 
@@ -170,12 +208,28 @@ internal sealed class RadiusInfrastructureBuilder
             var customization = GetCustomization(resource);
             var isLegacy = IsLegacyResourceType(resourceType);
 
+            // Per-instance recipe binding: a cloud-managed selection wins over the
+            // resource's customization recipe so same-type mixed materialization
+            // (one in-cluster, one cloud-managed) resolves per instance (FR-007, INV-5).
+            var managedRecipe = GetManagedRecipe(resource);
+            var effectiveRecipe = managedRecipe ?? customization?.Recipe;
+
+            // When this type is mixed (it also has an in-cluster instance), the shared
+            // default recipe stays on the in-cluster recipe, so bind the cloud recipe
+            // for this managed instance per instance: UDT instances carry the recipe
+            // location directly; legacy instances reference a distinct recipe name.
+            var isMixedManaged = managedRecipe?.RecipeLocation is not null
+                && typesWithInClusterInstance.Contains(resourceType);
+            var bindRecipeLocationOnInstance = !isLegacy && isMixedManaged;
+            var instanceRecipeNameOverride = isLegacy && isMixedManaged ? resource.Name : null;
+
             ProvisionableResource parentEnv = isLegacy ? legacyEnvConstruct! : envConstruct!;
             ProvisionableResource parentApp = isLegacy ? legacyAppConstruct! : appConstruct!;
 
             var typeInstance = CreateResourceTypeConstruct(
                 identifier, resource.Name, resourceType, apiVersion,
-                parentApp, parentEnv, customization);
+                parentApp, parentEnv, effectiveRecipe, bindRecipeLocationOnInstance,
+                instanceRecipeNameOverride);
             options.ResourceTypeInstances.Add(typeInstance);
             typeInstancesByResourceName[resource.Name] = typeInstance;
             instanceParents[typeInstance] = (parentEnv, parentApp);
@@ -555,6 +609,30 @@ internal sealed class RadiusInfrastructureBuilder
     }
 
     /// <summary>
+    /// Returns the cloud-targeting recipe for <paramref name="resource"/> when it is
+    /// marked cloud-managed on the environment being published (via
+    /// <c>WithManagedResource</c>), or <see langword="null"/> when it is in-cluster.
+    /// The selection is read from the <em>specific</em> environment's annotation so a
+    /// resource can be in-cluster in one environment and cloud-managed in another
+    /// (FR-006); the annotation is never shared between environments.
+    /// </summary>
+    private RadiusRecipe? GetManagedRecipe(IResource resource)
+    {
+        var annotation = _environment.Annotations
+            .OfType<Annotations.RadiusManagedResourcesAnnotation>()
+            .FirstOrDefault();
+
+        if (annotation is null)
+        {
+            return null;
+        }
+
+        return annotation.Selections.TryGetValue(resource.Name, out var selection)
+            ? selection.Recipe
+            : null;
+    }
+
+    /// <summary>
     /// Builds a <c>.id</c> expression for a resource, e.g., <c>envIdentifier.id</c>.
     /// </summary>
     private static BicepExpression BuildIdExpression(Azure.Provisioning.Primitives.ProvisionableResource resource)
@@ -606,27 +684,47 @@ internal sealed class RadiusInfrastructureBuilder
     private static RadiusResourceTypeConstruct CreateResourceTypeConstruct(
         string identifier, string resourceName, string resourceType, string apiVersion,
         ProvisionableResource appConstruct, ProvisionableResource envConstruct,
-        RadiusResourceCustomization? customization)
+        RadiusRecipe? recipe, bool bindRecipeLocationOnInstance = false,
+        string? instanceRecipeNameOverride = null)
     {
         var construct = new RadiusResourceTypeConstruct(identifier, resourceType, apiVersion);
         construct.ResourceName = resourceName;
         construct.ApplicationId = BuildIdExpression(appConstruct);
         construct.EnvironmentId = BuildIdExpression(envConstruct);
 
-        if (customization is not null)
+        // Mixed same-type materialization on a legacy type: bind this instance to its
+        // own named recipe (registered on the legacy environment) so it doesn't share
+        // the type's in-cluster "default" recipe (FR-007, INV-5).
+        if (!string.IsNullOrEmpty(instanceRecipeNameOverride))
         {
-            // Custom recipe
-            if (customization.Recipe is not null)
-            {
-                // Empty Name means the caller relied on the default; map to "default"
-                // so the emitted recipe pack entry has a sensible name.
-                construct.RecipeName = string.IsNullOrEmpty(customization.Recipe.Name)
-                    ? "default"
-                    : customization.Recipe.Name;
+            construct.RecipeName = instanceRecipeNameOverride;
+        }
 
-                if (customization.Recipe.Parameters.Count > 0)
+        if (recipe is not null)
+        {
+            // Mixed same-type materialization on a UDT type: bind this instance directly
+            // to its cloud recipe location because the shared recipe-pack entry for the
+            // type stays on the in-cluster default (FR-007, INV-5).
+            if (bindRecipeLocationOnInstance && !string.IsNullOrEmpty(recipe.RecipeLocation))
+            {
+                construct.RecipeLocation = recipe.RecipeLocation;
+            }
+
+            var hasExplicitName = !string.IsNullOrEmpty(recipe.Name);
+            var hasParameters = recipe.Parameters.Count > 0;
+
+            // Only emit the instance-level recipe name/parameters when the recipe
+            // carries them. A location-only recipe (e.g. a cloud-managed override)
+            // that is bound through the recipe pack needs no instance recipe block,
+            // and emitting an empty `parameters: {}` would produce Bicep the writer
+            // cannot serialize.
+            if (hasExplicitName || hasParameters)
+            {
+                construct.RecipeName = hasExplicitName ? recipe.Name : "default";
+
+                if (hasParameters)
                 {
-                    foreach (var (key, value) in customization.Recipe.Parameters)
+                    foreach (var (key, value) in recipe.Parameters)
                     {
                         construct.RecipeParameters[key] = BicepPostProcessor.ToBicepLiteral(value);
                     }
@@ -640,12 +738,12 @@ internal sealed class RadiusInfrastructureBuilder
     private void AddRecipeEntry(
         Dictionary<string, RecipeEntry> entries,
         string resourceType,
-        RadiusResourceCustomization? customization)
+        RadiusRecipe? recipe)
     {
         // Custom recipe with template path
-        if (customization?.Recipe?.RecipeLocation is not null)
+        if (recipe?.RecipeLocation is not null)
         {
-            entries[resourceType] = new RecipeEntry("bicep", customization.Recipe.RecipeLocation);
+            entries[resourceType] = new RecipeEntry("bicep", recipe.RecipeLocation);
             return;
         }
 
@@ -684,9 +782,19 @@ internal sealed class RadiusInfrastructureBuilder
     private void AddLegacyRecipeEntry(
         Dictionary<string, Dictionary<string, RecipeEntry>> entries,
         string resourceType,
-        RadiusResourceCustomization? customization)
+        RadiusRecipe? recipe,
+        string? recipeNameOverride = null)
     {
-        var recipeName = customization?.Recipe?.Name ?? "default";
+        // A managed/location-only recipe leaves Name as string.Empty (its default),
+        // which `?? "default"` does NOT catch. An empty recipe-name key would emit an
+        // empty-string Bicep property (`recipes: { type: { '': {...} } }`) and crash the
+        // Azure.Provisioning writer, so collapse empty names to "default" here too.
+        // A caller-supplied override (e.g. a cloud-managed resource's name) wins so a
+        // mixed-materialization type can hold both the in-cluster "default" recipe and
+        // a per-instance cloud recipe (FR-007, INV-5).
+        var recipeName = !string.IsNullOrEmpty(recipeNameOverride)
+            ? recipeNameOverride
+            : string.IsNullOrEmpty(recipe?.Name) ? "default" : recipe.Name;
 
         if (!entries.TryGetValue(resourceType, out var byName))
         {
@@ -694,10 +802,10 @@ internal sealed class RadiusInfrastructureBuilder
             entries[resourceType] = byName;
         }
 
-        if (customization?.Recipe?.RecipeLocation is not null)
+        if (recipe?.RecipeLocation is not null)
         {
             // Custom recipe: last write wins *for the same (type, recipeName)*.
-            byName[recipeName] = new RecipeEntry("bicep", customization.Recipe.RecipeLocation);
+            byName[recipeName] = new RecipeEntry("bicep", recipe.RecipeLocation);
             return;
         }
 

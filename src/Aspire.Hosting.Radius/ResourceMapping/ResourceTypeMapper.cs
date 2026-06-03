@@ -159,6 +159,27 @@ internal sealed class ResourceTypeMapper
     }
 
     /// <summary>
+    /// Returns <see langword="true"/> when <paramref name="resource"/> maps to a known
+    /// non-compute Radius backing resource type (e.g. a cache, database, or queue).
+    /// Returns <see langword="false"/> for compute workloads (project/container) and for
+    /// resources with no Radius mapping (which would otherwise fall back to
+    /// <see cref="RadiusResourceTypes.Containers"/>).
+    /// </summary>
+    /// <remarks>
+    /// This is a side-effect-free probe used by configuration-time validation
+    /// (<c>WithManagedResource</c>); unlike <see cref="MapResource"/> it never logs, so
+    /// validation does not emit the per-resource mapping diagnostics that belong to the
+    /// publish path. Custom type overrides (<see cref="RadiusResourceCustomization.TypeOverride"/>)
+    /// are not considered here because they are resolved later during publishing.
+    /// </remarks>
+    internal static bool IsBackingResource(IResource resource)
+    {
+        var key = GetMappingKey(resource);
+        return s_typeMappings.TryGetValue(key, out var mapping)
+            && !string.Equals(mapping.RadiusType, RadiusResourceTypes.Containers, StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// Gets the key used to look up the type mapping. Walks the type hierarchy to find the
     /// most specific match (e.g., <c>RedisResource</c> inherits from <c>ContainerResource</c>
     /// but should match as Redis).

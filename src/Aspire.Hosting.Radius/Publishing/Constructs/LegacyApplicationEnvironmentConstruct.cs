@@ -23,6 +23,8 @@ public sealed class LegacyApplicationEnvironmentConstruct : ProvisionableResourc
     private BicepValue<string>? _name;
     private BicepValue<string>? _computeKind;
     private BicepValue<string>? _computeNamespace;
+    private BicepValue<string>? _azureScope;
+    private BicepValue<string>? _awsScope;
     private BicepDictionary<BicepDictionary<LegacyRecipeEntryConstruct>>? _recipes;
 
     /// <summary>The resource name.</summary>
@@ -47,6 +49,30 @@ public sealed class LegacyApplicationEnvironmentConstruct : ProvisionableResourc
     }
 
     /// <summary>
+    /// Scope path of the Azure cloud provider, emitted as
+    /// <c>properties.providers.azure.scope</c>. Unset for environments that do not
+    /// configure an Azure provider. Required when a cloud-managed resource on this
+    /// environment is materialized via a legacy <c>Applications.*</c> recipe so Radius
+    /// can resolve the Azure provider during deployment.
+    /// </summary>
+    public BicepValue<string> AzureScope
+    {
+        get { Initialize(); return _azureScope!; }
+        set { Initialize(); _azureScope!.Assign(value); }
+    }
+
+    /// <summary>
+    /// Scope path of the AWS cloud provider, emitted as
+    /// <c>properties.providers.aws.scope</c>. Unset for environments that do not
+    /// configure an AWS provider.
+    /// </summary>
+    public BicepValue<string> AwsScope
+    {
+        get { Initialize(); return _awsScope!; }
+        set { Initialize(); _awsScope!.Assign(value); }
+    }
+
+    /// <summary>
     /// Inline recipes keyed by resource type, with each value being a map of
     /// recipe name to recipe entry.
     /// </summary>
@@ -68,6 +94,8 @@ public sealed class LegacyApplicationEnvironmentConstruct : ProvisionableResourc
         _name = DefineProperty<string>(nameof(EnvironmentName), ["name"]);
         _computeKind = DefineProperty<string>(nameof(ComputeKind), ["properties", "compute", "kind"]);
         _computeNamespace = DefineProperty<string>(nameof(ComputeNamespace), ["properties", "compute", "namespace"]);
+        _azureScope = DefineProperty<string>(nameof(AzureScope), ["properties", "providers", "azure", "scope"]);
+        _awsScope = DefineProperty<string>(nameof(AwsScope), ["properties", "providers", "aws", "scope"]);
         _recipes = DefineDictionaryProperty<BicepDictionary<LegacyRecipeEntryConstruct>>(
             nameof(Recipes), ["properties", "recipes"]);
     }

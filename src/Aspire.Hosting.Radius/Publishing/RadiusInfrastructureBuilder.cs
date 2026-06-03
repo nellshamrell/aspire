@@ -77,24 +77,34 @@ internal sealed class RadiusInfrastructureBuilder
         var legacyRecipeEntries = new Dictionary<string, Dictionary<string, RecipeEntry>>(StringComparer.Ordinal);
         var typeInstancesByResourceName = new Dictionary<string, RadiusResourceTypeConstruct>(StringComparer.Ordinal);
 
-        // A Radius resource type keeps its in-cluster (local-dev) default recipe
-        // whenever at least one of its instances is in-cluster. Radius binds one recipe
-        // per type per environment, so a cloud-managed instance of such a "mixed" type
-        // cannot replace the shared default without clobbering its in-cluster sibling.
-        // Instead it binds the cloud recipe per instance (FR-007, INV-5): UDT types via
-        // an instance-level recipe location, legacy types via a distinct named recipe.
-        // Types that are *entirely* cloud-managed bind their default directly to the
-        // cloud recipe.
-        var typesWithInClusterInstance = new HashSet<string>(StringComparer.Ordinal);
+        // Radius binds one recipe per resource type per environment (UDT types via the shared
+        // recipe pack, legacy types via inline named recipes). When the instances of a single
+        // type resolve to *different* effective recipes, that one shared type-level binding
+        // cannot represent all of them, so each instance that carries its own recipe location
+        // binds per instance (UDT: an instance-level recipe location; legacy: a distinct named
+        // recipe) while the type-level entry keeps the in-cluster default. Compute the set of
+        // distinct effective recipe locations per type so the "divergent" case can be detected
+        // below (FR-007, INV-5). A null entry means an in-cluster / default-recipe instance.
+        // Both cloud-managed selections and customization recipes count, so a custom in-cluster
+        // sibling of a managed resource (or two managed instances with different recipes) no
+        // longer silently clobbers the shared type entry.
+        var effectiveLocationsByType = new Dictionary<string, HashSet<string?>>(StringComparer.Ordinal);
         foreach (var resource in radiusResources)
         {
             var rt = resolvedTypes[resource].ResourceType;
-            var recipeLocation = (GetManagedRecipe(resource) ?? GetCustomization(resource)?.Recipe)?.RecipeLocation;
-            if (recipeLocation is null)
+            var location = NormalizeRecipeLocation(
+                (GetManagedRecipe(resource) ?? GetCustomization(resource)?.Recipe)?.RecipeLocation);
+            if (!effectiveLocationsByType.TryGetValue(rt, out var locations))
             {
-                typesWithInClusterInstance.Add(rt);
+                locations = new HashSet<string?>(StringComparer.Ordinal);
+                effectiveLocationsByType[rt] = locations;
             }
+            locations.Add(location);
         }
+
+        // A type is "divergent" when its instances do not all share a single effective recipe.
+        bool IsDivergentType(string resourceType)
+            => effectiveLocationsByType.TryGetValue(resourceType, out var locations) && locations.Count > 1;
 
         // Collect recipe entries: UDT types go into the recipe pack, legacy
         // Applications.* types are stashed for inline emission on the legacy env.
@@ -108,22 +118,26 @@ internal sealed class RadiusInfrastructureBuilder
             // to the cloud-targeting recipe (FR-008).
             var managedRecipe = GetManagedRecipe(resource);
             var effectiveRecipe = managedRecipe ?? customization?.Recipe;
-            var isMixedManaged = managedRecipe?.RecipeLocation is not null
-                && typesWithInClusterInstance.Contains(resourceType);
+            var bindPerInstance = NormalizeRecipeLocation(effectiveRecipe?.RecipeLocation) is not null
+                && IsDivergentType(resourceType);
 
             if (IsLegacyResourceType(resourceType))
             {
-                // A cloud-managed legacy resource in a mixed type registers its cloud
-                // recipe under a distinct recipe name (its resource name) so it doesn't
-                // collide with the type's in-cluster "default" recipe (FR-007, INV-5).
-                var recipeNameOverride = isMixedManaged ? resource.Name : null;
+                // A nameless effective recipe (e.g. a cloud-managed, location-only recipe) in a
+                // divergent type needs a synthetic per-instance recipe name (its resource name)
+                // so it doesn't collapse onto the shared "default" recipe (FR-007, INV-5). A
+                // recipe that already carries an explicit Name keeps it, so distinct named
+                // recipes for the same legacy type still register side by side.
+                var recipeNameOverride = bindPerInstance && string.IsNullOrEmpty(effectiveRecipe?.Name)
+                    ? resource.Name
+                    : null;
                 AddLegacyRecipeEntry(legacyRecipeEntries, resourceType, effectiveRecipe, recipeNameOverride);
             }
-            else if (isMixedManaged)
+            else if (bindPerInstance)
             {
-                // Mixed materialization for this UDT type: keep the in-cluster default in
-                // the shared pack; this managed instance binds its cloud recipe at the
-                // instance level (see the resource-instance loop below).
+                // Divergent materialization for this UDT type: keep the in-cluster default in
+                // the shared pack; this instance binds its recipe at the instance level (see
+                // the resource-instance loop below).
                 AddRecipeEntry(udtRecipeEntries, resourceType, recipe: null);
             }
             else
@@ -209,19 +223,24 @@ internal sealed class RadiusInfrastructureBuilder
             var isLegacy = IsLegacyResourceType(resourceType);
 
             // Per-instance recipe binding: a cloud-managed selection wins over the
-            // resource's customization recipe so same-type mixed materialization
-            // (one in-cluster, one cloud-managed) resolves per instance (FR-007, INV-5).
+            // resource's customization recipe so same-type divergent materialization
+            // (instances with different recipes) resolves per instance (FR-007, INV-5).
             var managedRecipe = GetManagedRecipe(resource);
             var effectiveRecipe = managedRecipe ?? customization?.Recipe;
 
-            // When this type is mixed (it also has an in-cluster instance), the shared
-            // default recipe stays on the in-cluster recipe, so bind the cloud recipe
-            // for this managed instance per instance: UDT instances carry the recipe
-            // location directly; legacy instances reference a distinct recipe name.
-            var isMixedManaged = managedRecipe?.RecipeLocation is not null
-                && typesWithInClusterInstance.Contains(resourceType);
-            var bindRecipeLocationOnInstance = !isLegacy && isMixedManaged;
-            var instanceRecipeNameOverride = isLegacy && isMixedManaged ? resource.Name : null;
+            // When this type is divergent (its instances don't all share one effective recipe),
+            // the shared default recipe stays on the in-cluster recipe, so bind this instance's
+            // recipe per instance: UDT instances carry the recipe location directly; legacy
+            // instances reference a distinct recipe name.
+            var bindPerInstance = NormalizeRecipeLocation(effectiveRecipe?.RecipeLocation) is not null
+                && IsDivergentType(resourceType);
+            var bindRecipeLocationOnInstance = !isLegacy && bindPerInstance;
+            // Legacy instances reference a synthetic per-instance recipe name (their resource
+            // name) only when the effective recipe is nameless; a recipe with an explicit Name
+            // is referenced by that Name (see the recipe-collection loop above).
+            var instanceRecipeNameOverride = isLegacy && bindPerInstance && string.IsNullOrEmpty(effectiveRecipe?.Name)
+                ? resource.Name
+                : null;
 
             ProvisionableResource parentEnv = isLegacy ? legacyEnvConstruct! : envConstruct!;
             ProvisionableResource parentApp = isLegacy ? legacyAppConstruct! : appConstruct!;
@@ -632,6 +651,12 @@ internal sealed class RadiusInfrastructureBuilder
             : null;
     }
 
+    // Treat null and empty/whitespace recipe locations as "no location" (an in-cluster /
+    // default-recipe instance) so divergence detection and per-instance binding agree on
+    // what counts as a real recipe location.
+    private static string? NormalizeRecipeLocation(string? location)
+        => string.IsNullOrWhiteSpace(location) ? null : location;
+
     /// <summary>
     /// Builds a <c>.id</c> expression for a resource, e.g., <c>envIdentifier.id</c>.
     /// </summary>
@@ -663,14 +688,45 @@ internal sealed class RadiusInfrastructureBuilder
 
         if (annotation.Azure is { } azure)
         {
-            construct.AzureScope = $"/subscriptions/{azure.SubscriptionId}/resourceGroups/{azure.ResourceGroup}";
+            construct.AzureScope = BuildAzureScope(azure);
         }
 
         if (annotation.Aws is { } aws)
         {
-            construct.AwsScope = $"/planes/aws/aws/accounts/{aws.AccountId}/regions/{aws.Region}";
+            construct.AwsScope = BuildAwsScope(aws);
         }
     }
+
+    // The legacy Applications.Core/environments schema carries cloud providers under the
+    // same properties.providers.{azure,aws}.scope paths as the UDT environment. Apply them
+    // here too so a pure-legacy publish (e.g. a managed Redis with no UDT compute) still
+    // emits the provider configuration that ValidateProviderConfigured requires.
+    private void ApplyCloudProviders(LegacyApplicationEnvironmentConstruct construct)
+    {
+        var annotation = _environment.Annotations
+            .OfType<Annotations.RadiusCloudProvidersAnnotation>()
+            .FirstOrDefault();
+        if (annotation is null)
+        {
+            return;
+        }
+
+        if (annotation.Azure is { } azure)
+        {
+            construct.AzureScope = BuildAzureScope(azure);
+        }
+
+        if (annotation.Aws is { } aws)
+        {
+            construct.AwsScope = BuildAwsScope(aws);
+        }
+    }
+
+    private static string BuildAzureScope(CloudProviders.AzureRadiusProviderConfig azure)
+        => $"/subscriptions/{azure.SubscriptionId}/resourceGroups/{azure.ResourceGroup}";
+
+    private static string BuildAwsScope(CloudProviders.AwsRadiusProviderConfig aws)
+        => $"/planes/aws/aws/accounts/{aws.AccountId}/regions/{aws.Region}";
 
     private static RadiusApplicationConstruct CreateApplicationConstruct(
         string identifier, RadiusEnvironmentConstruct envConstruct)
@@ -692,17 +748,18 @@ internal sealed class RadiusInfrastructureBuilder
         construct.ApplicationId = BuildIdExpression(appConstruct);
         construct.EnvironmentId = BuildIdExpression(envConstruct);
 
-        // Mixed same-type materialization on a legacy type: bind this instance to its
+        // Divergent same-type materialization on a legacy type: bind this instance to its
         // own named recipe (registered on the legacy environment) so it doesn't share
         // the type's in-cluster "default" recipe (FR-007, INV-5).
-        if (!string.IsNullOrEmpty(instanceRecipeNameOverride))
+        var hasRecipeNameOverride = !string.IsNullOrEmpty(instanceRecipeNameOverride);
+        if (hasRecipeNameOverride)
         {
-            construct.RecipeName = instanceRecipeNameOverride;
+            construct.RecipeName = instanceRecipeNameOverride!;
         }
 
         if (recipe is not null)
         {
-            // Mixed same-type materialization on a UDT type: bind this instance directly
+            // Divergent same-type materialization on a UDT type: bind this instance directly
             // to its cloud recipe location because the shared recipe-pack entry for the
             // type stays on the in-cluster default (FR-007, INV-5).
             if (bindRecipeLocationOnInstance && !string.IsNullOrEmpty(recipe.RecipeLocation))
@@ -720,7 +777,14 @@ internal sealed class RadiusInfrastructureBuilder
             // cannot serialize.
             if (hasExplicitName || hasParameters)
             {
-                construct.RecipeName = hasExplicitName ? recipe.Name : "default";
+                // A legacy per-instance name override (a divergent same-type instance bound
+                // to its own named recipe registered under its resource name) must win over
+                // the recipe's own Name; otherwise the instance would reference a recipe name
+                // that was never registered. Parameters are still emitted in either case.
+                if (!hasRecipeNameOverride)
+                {
+                    construct.RecipeName = hasExplicitName ? recipe.Name : "default";
+                }
 
                 if (hasParameters)
                 {
@@ -832,6 +896,7 @@ internal sealed class RadiusInfrastructureBuilder
         construct.EnvironmentName = _environment.Name;
         construct.ComputeKind = "kubernetes";
         construct.ComputeNamespace = _environment.Namespace;
+        ApplyCloudProviders(construct);
 
         foreach (var (resourceType, byName) in legacyRecipeEntries)
         {

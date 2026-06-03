@@ -107,4 +107,64 @@ public class ManagedValidationTests
 
         Assert.Null(ex);
     }
+
+    [Fact]
+    public void Managed_RecipeWithoutLocation_Throws_ASPIRERADIUS023()
+    {
+        var builder = DistributedApplication.CreateBuilder();
+        var env = AzureEnv(builder);
+        var cache = builder.AddRedis("cache");
+
+        var ex = Assert.Throws<ArgumentException>(() =>
+            env.WithManagedResource(cache, RadiusCloud.Azure, new RadiusRecipe()));
+
+        Assert.Equal("resource", ex.ParamName);
+        Assert.Contains("ASPIRERADIUS023", ex.Message);
+        Assert.Contains("cache", ex.Message);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void Managed_RecipeWithEmptyOrWhitespaceLocation_Throws_ASPIRERADIUS023(string location)
+    {
+        var builder = DistributedApplication.CreateBuilder();
+        var env = AzureEnv(builder);
+        var cache = builder.AddRedis("cache");
+
+        var ex = Assert.Throws<ArgumentException>(() =>
+            env.WithManagedResource(cache, RadiusCloud.Azure, new RadiusRecipe { RecipeLocation = location }));
+
+        Assert.Contains("ASPIRERADIUS023", ex.Message);
+    }
+
+    [Fact]
+    public void Managed_OnChildResource_Throws_ASPIRERADIUS024()
+    {
+        var builder = DistributedApplication.CreateBuilder();
+        var env = AzureEnv(builder);
+        var db = builder.AddSqlServer("sql").AddDatabase("db");
+
+        var ex = Assert.Throws<ArgumentException>(() =>
+            env.WithManagedResource(db, RadiusCloud.Azure, new RadiusRecipe { RecipeLocation = AzureRecipe }));
+
+        Assert.Equal("resource", ex.ParamName);
+        Assert.Contains("ASPIRERADIUS024", ex.Message);
+        Assert.Contains("sql", ex.Message);
+    }
+
+    [Fact]
+    public void Managed_OnUnsupportedResource_Throws_ASPIRERADIUS025()
+    {
+        var builder = DistributedApplication.CreateBuilder();
+        var env = AzureEnv(builder);
+        var parameter = builder.AddParameter("param", "value");
+
+        var ex = Assert.Throws<ArgumentException>(() =>
+            env.WithManagedResource(parameter, RadiusCloud.Azure, new RadiusRecipe { RecipeLocation = AzureRecipe }));
+
+        Assert.Equal("resource", ex.ParamName);
+        Assert.Contains("ASPIRERADIUS025", ex.Message);
+        Assert.Contains("param", ex.Message);
+    }
 }

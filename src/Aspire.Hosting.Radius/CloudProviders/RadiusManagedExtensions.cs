@@ -32,9 +32,11 @@ public static class RadiusManagedExtensions
     /// <returns>The same environment builder for chaining.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="builder"/>, <paramref name="resource"/>, or <paramref name="recipe"/> is null.</exception>
     /// <exception cref="ArgumentException">
-    /// The target is a compute workload (<c>ASPIRERADIUS022</c>), the selected cloud has no
-    /// provider configured on this environment (<c>ASPIRERADIUS020</c>), or the recipe's declared
-    /// cloud conflicts with <paramref name="cloud"/> (<c>ASPIRERADIUS021</c>).
+    /// The target is a child resource (<c>ASPIRERADIUS024</c>), a compute workload
+    /// (<c>ASPIRERADIUS022</c>), or not a supported backing resource (<c>ASPIRERADIUS025</c>);
+    /// the recipe has no <see cref="RadiusRecipe.RecipeLocation"/> (<c>ASPIRERADIUS023</c>);
+    /// the selected cloud has no provider configured on this environment (<c>ASPIRERADIUS020</c>);
+    /// or the recipe's declared cloud conflicts with <paramref name="cloud"/> (<c>ASPIRERADIUS021</c>).
     /// </exception>
     // [AspireExportIgnore]: the open-generic `IResourceBuilder<IResource>` target
     // parameter is part of the public C# API surface but Aspire's ATS exporter

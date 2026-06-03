@@ -3,6 +3,7 @@
 
 using Aspire.Hosting.ApplicationModel;
 using Aspire.Hosting.Radius.Annotations;
+using Aspire.Hosting.Radius.ResourceMapping;
 
 namespace Aspire.Hosting.Radius.CloudProviders;
 
@@ -15,9 +16,11 @@ namespace Aspire.Hosting.Radius.CloudProviders;
 internal static class ManagedValidation
 {
     /// <summary>
-    /// Runs every configuration-time rule for a selection: not-compute
-    /// (<c>ASPIRERADIUS022</c>), provider-configured (<c>ASPIRERADIUS020</c>),
-    /// and cloud/recipe match (<c>ASPIRERADIUS021</c>).
+    /// Runs every configuration-time rule for a selection: not-a-child
+    /// (<c>ASPIRERADIUS024</c>), not-compute (<c>ASPIRERADIUS022</c>), supported backing
+    /// type (<c>ASPIRERADIUS025</c>), recipe-location present (<c>ASPIRERADIUS023</c>),
+    /// provider-configured (<c>ASPIRERADIUS020</c>), and cloud/recipe match
+    /// (<c>ASPIRERADIUS021</c>).
     /// </summary>
     /// <param name="environment">The owning Radius environment resource.</param>
     /// <param name="target">The resource being marked cloud-managed.</param>
@@ -31,9 +34,30 @@ internal static class ManagedValidation
         RadiusRecipe recipe,
         string paramName)
     {
+        ValidateNotChild(target, paramName);
         ValidateNotCompute(target, paramName);
+        ValidateSupportedBackingResource(target, paramName);
+        ValidateRecipeLocation(target, recipe, paramName);
         ValidateProviderConfigured(environment, target, cloud, paramName);
         ValidateCloudRecipeMatch(target, cloud, recipe, paramName);
+    }
+
+    /// <summary>
+    /// <c>ASPIRERADIUS024</c>: a child resource (e.g. a database on a server) cannot be
+    /// marked cloud-managed directly; publishing represents it via its parent, so the
+    /// selection must be applied to the parent resource instead.
+    /// </summary>
+    internal static void ValidateNotChild(IResource target, string paramName)
+    {
+        if (target is IResourceWithParent child)
+        {
+            throw new ArgumentException(
+                $"Resource '{target.Name}' is a child of '{child.Parent.Name}' and cannot be marked " +
+                "cloud-managed directly; Radius materializes it through its parent. Call " +
+                $"WithManagedResource on the parent resource '{child.Parent.Name}' instead. " +
+                "Diagnostic: ASPIRERADIUS024.",
+                paramName);
+        }
     }
 
     /// <summary>
@@ -49,6 +73,41 @@ internal static class ManagedValidation
                 "marked cloud-managed. Only backing resources (e.g. databases, caches, queues) may be " +
                 "cloud-managed; compute always runs as a Radius.Compute/containers workload on Kubernetes. " +
                 "Diagnostic: ASPIRERADIUS022.",
+                paramName);
+        }
+    }
+
+    /// <summary>
+    /// <c>ASPIRERADIUS025</c>: the target must map to a known non-compute Radius backing
+    /// resource type. Resources with no Radius mapping (e.g. parameters) would otherwise be
+    /// accepted here and then silently skipped or misclassified during publish.
+    /// </summary>
+    internal static void ValidateSupportedBackingResource(IResource target, string paramName)
+    {
+        if (!ResourceTypeMapper.IsBackingResource(target))
+        {
+            throw new ArgumentException(
+                $"Resource '{target.Name}' (type '{target.GetType().Name}') does not map to a Radius " +
+                "backing resource type and cannot be marked cloud-managed. Only supported backing " +
+                "resources (e.g. Redis, SQL Server, PostgreSQL, MongoDB, RabbitMQ) may be cloud-managed. " +
+                "Diagnostic: ASPIRERADIUS025.",
+                paramName);
+        }
+    }
+
+    /// <summary>
+    /// <c>ASPIRERADIUS023</c>: a cloud-managed selection requires a non-empty recipe
+    /// location; without one the resource would silently fall back to the in-cluster
+    /// default recipe while still being reported as cloud-managed.
+    /// </summary>
+    internal static void ValidateRecipeLocation(IResource target, RadiusRecipe recipe, string paramName)
+    {
+        if (string.IsNullOrWhiteSpace(recipe.RecipeLocation))
+        {
+            throw new ArgumentException(
+                $"Resource '{target.Name}' is marked cloud-managed but its recipe has no RecipeLocation. " +
+                "A cloud-managed recipe must specify the OCI location of the cloud-targeting recipe " +
+                "(RadiusRecipe.RecipeLocation). Diagnostic: ASPIRERADIUS023.",
                 paramName);
         }
     }

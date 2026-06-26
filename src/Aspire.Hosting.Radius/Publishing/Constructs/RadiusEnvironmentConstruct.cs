@@ -14,8 +14,10 @@ public sealed class RadiusEnvironmentConstruct : ProvisionableResource
     private BicepValue<string>? _name;
     private BicepList<string>? _recipePacks;
     private BicepValue<string>? _kubernetesNamespace;
-    private BicepValue<string>? _azureScope;
-    private BicepValue<string>? _awsScope;
+    private BicepValue<string>? _azureSubscriptionId;
+    private BicepValue<string>? _azureResourceGroupName;
+    private BicepValue<string>? _awsAccountId;
+    private BicepValue<string>? _awsRegion;
 
     /// <summary>The resource name.</summary>
     public BicepValue<string> EnvironmentName
@@ -44,27 +46,53 @@ public sealed class RadiusEnvironmentConstruct : ProvisionableResource
     }
 
     /// <summary>
-    /// Scope path of the Azure cloud provider, e.g.
-    /// <c>/subscriptions/{sub}/resourceGroups/{rg}</c>. Emitted as
-    /// <c>properties.providers.azure.scope</c>. Unset for environments that
-    /// do not configure an Azure provider.
+    /// Subscription GUID of the Azure cloud provider. Emitted as
+    /// <c>properties.providers.azure.subscriptionId</c>. The native
+    /// <c>Radius.Core/environments</c> schema models the Azure provider with
+    /// discrete <c>subscriptionId</c>/<c>resourceGroupName</c> fields (unlike
+    /// the legacy <c>Applications.Core/environments</c> single <c>scope</c>
+    /// path). Unset for environments that do not configure an Azure provider.
     /// </summary>
-    public BicepValue<string> AzureScope
+    public BicepValue<string> AzureSubscriptionId
     {
-        get { Initialize(); return _azureScope!; }
-        set { Initialize(); _azureScope!.Assign(value); }
+        get { Initialize(); return _azureSubscriptionId!; }
+        set { Initialize(); _azureSubscriptionId!.Assign(value); }
     }
 
     /// <summary>
-    /// Scope path of the AWS cloud provider, e.g.
-    /// <c>/planes/aws/aws/accounts/{acc}/regions/{region}</c>. Emitted as
-    /// <c>properties.providers.aws.scope</c>. Unset for environments that
-    /// do not configure an AWS provider.
+    /// Resource-group name of the Azure cloud provider. Emitted as
+    /// <c>properties.providers.azure.resourceGroupName</c>. Unset for
+    /// environments that do not configure an Azure provider.
     /// </summary>
-    public BicepValue<string> AwsScope
+    public BicepValue<string> AzureResourceGroupName
     {
-        get { Initialize(); return _awsScope!; }
-        set { Initialize(); _awsScope!.Assign(value); }
+        get { Initialize(); return _azureResourceGroupName!; }
+        set { Initialize(); _azureResourceGroupName!.Assign(value); }
+    }
+
+    /// <summary>
+    /// 12-digit account ID of the AWS cloud provider. Emitted as
+    /// <c>properties.providers.aws.accountId</c>. The native
+    /// <c>Radius.Core/environments</c> schema models the AWS provider with
+    /// discrete <c>accountId</c>/<c>region</c> fields (unlike the legacy
+    /// <c>Applications.Core/environments</c> single <c>scope</c> path). Unset
+    /// for environments that do not configure an AWS provider.
+    /// </summary>
+    public BicepValue<string> AwsAccountId
+    {
+        get { Initialize(); return _awsAccountId!; }
+        set { Initialize(); _awsAccountId!.Assign(value); }
+    }
+
+    /// <summary>
+    /// Region code of the AWS cloud provider, e.g. <c>us-west-2</c>. Emitted as
+    /// <c>properties.providers.aws.region</c>. Unset for environments that do
+    /// not configure an AWS provider.
+    /// </summary>
+    public BicepValue<string> AwsRegion
+    {
+        get { Initialize(); return _awsRegion!; }
+        set { Initialize(); _awsRegion!.Assign(value); }
     }
 
     /// <summary>Initializes a new <see cref="RadiusEnvironmentConstruct"/> with the given Bicep identifier.</summary>
@@ -81,11 +109,17 @@ public sealed class RadiusEnvironmentConstruct : ProvisionableResource
         _kubernetesNamespace = DefineProperty<string>(
             nameof(KubernetesNamespace),
             ["properties", "providers", "kubernetes", "namespace"]);
-        _azureScope = DefineProperty<string>(
-            nameof(AzureScope),
-            ["properties", "providers", "azure", "scope"]);
-        _awsScope = DefineProperty<string>(
-            nameof(AwsScope),
-            ["properties", "providers", "aws", "scope"]);
+        _azureSubscriptionId = DefineProperty<string>(
+            nameof(AzureSubscriptionId),
+            ["properties", "providers", "azure", "subscriptionId"]);
+        _azureResourceGroupName = DefineProperty<string>(
+            nameof(AzureResourceGroupName),
+            ["properties", "providers", "azure", "resourceGroupName"]);
+        _awsAccountId = DefineProperty<string>(
+            nameof(AwsAccountId),
+            ["properties", "providers", "aws", "accountId"]);
+        _awsRegion = DefineProperty<string>(
+            nameof(AwsRegion),
+            ["properties", "providers", "aws", "region"]);
     }
 }

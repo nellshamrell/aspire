@@ -36,6 +36,10 @@ internal sealed class RadiusInfrastructureBuilder
         [RadiusResourceTypes.PostgreSqlDatabases] = "ghcr.io/radius-project/recipes/local-dev/postgresqldatabases:latest",
         [RadiusResourceTypes.MongoDatabases] = "ghcr.io/radius-project/recipes/local-dev/mongodatabases:latest",
         [RadiusResourceTypes.RabbitMQQueues] = "ghcr.io/radius-project/recipes/local-dev/rabbitmqqueues:latest",
+        // The Radius.Compute/containers UDT needs a recipe registered in the env's recipe pack;
+        // shipped Radius does not include one by default, so register the published container
+        // recipe so native containers deploy without a manually-authored recipe.
+        [RadiusResourceTypes.Containers] = "ghcr.io/radius-project/kube-recipes/containers:latest",
         // Legacy fallback types also get default recipes
         [RadiusResourceTypes.LegacyRedisCaches] = "ghcr.io/radius-project/recipes/local-dev/rediscaches:latest",
         [RadiusResourceTypes.LegacyMongoDatabases] = "ghcr.io/radius-project/recipes/local-dev/mongodatabases:latest",
@@ -202,6 +206,15 @@ internal sealed class RadiusInfrastructureBuilder
 
         if (hasUdtResources || computeForcesUdtChain)
         {
+            // UDT containers route to Radius.Compute/containers, which the control plane
+            // provisions through a recipe. Register the default container recipe in the
+            // pack so native containers deploy on shipped Radius without a hand-authored
+            // recipe — mirroring how backing resources get their default recipes.
+            if (computeForcesUdtChain)
+            {
+                AddRecipeEntry(udtRecipeEntries, RadiusResourceTypes.Containers, null);
+            }
+
             recipePackConstruct = CreateRecipePackConstruct(recipePackIdentifier, udtRecipeEntries);
             options.RecipePacks.Add(recipePackConstruct);
 
@@ -306,7 +319,7 @@ internal sealed class RadiusInfrastructureBuilder
             else
             {
                 var containerConstruct = CreateContainerConstruct(
-                    identifier, resource.Name, image, appConstruct!, connectionTargets);
+                    identifier, resource.Name, image, appConstruct!, envConstruct!, connectionTargets);
                 options.Containers.Add(containerConstruct);
                 containerConnectionTargets[containerConstruct] = connectionTargets;
             }
@@ -468,6 +481,11 @@ internal sealed class RadiusInfrastructureBuilder
             if (appConstruct is not null && IdentifierChanged(appConstruct, snapshot.AppId))
             {
                 container.ApplicationId = BuildIdExpression(appConstruct);
+            }
+
+            if (envConstruct is not null && IdentifierChanged(envConstruct, snapshot.EnvId))
+            {
+                container.EnvironmentId = BuildIdExpression(envConstruct);
             }
 
             if (targets.Count == 0 ||
@@ -1066,12 +1084,14 @@ internal sealed class RadiusInfrastructureBuilder
     private static RadiusContainerConstruct CreateContainerConstruct(
         string identifier, string resourceName, string image,
         RadiusApplicationConstruct appConstruct,
+        RadiusEnvironmentConstruct envConstruct,
         Dictionary<string, RadiusResourceTypeConstruct> connectionTargets)
     {
         var construct = new RadiusContainerConstruct(identifier, resourceName);
         construct.ContainerName = resourceName;
         construct.Image = image;
         construct.ApplicationId = BuildIdExpression(appConstruct);
+        construct.EnvironmentId = BuildIdExpression(envConstruct);
 
         if (connectionTargets.Count > 0)
         {

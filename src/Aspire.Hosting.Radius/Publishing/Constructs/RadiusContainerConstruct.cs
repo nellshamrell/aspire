@@ -20,6 +20,7 @@ public sealed class RadiusContainerConstruct : ProvisionableResource
     private BicepValue<string>? _name;
     private BicepValue<string>? _image;
     private BicepValue<string>? _applicationId;
+    private BicepValue<string>? _environmentId;
     private BicepDictionary<ConnectionConstruct>? _connections;
 
     /// <summary>The resource name.</summary>
@@ -41,6 +42,13 @@ public sealed class RadiusContainerConstruct : ProvisionableResource
     {
         get { Initialize(); return _applicationId!; }
         set { Initialize(); _applicationId!.Assign(value); }
+    }
+
+    /// <summary>Reference to the environment resource ID.</summary>
+    public BicepValue<string> EnvironmentId
+    {
+        get { Initialize(); return _environmentId!; }
+        set { Initialize(); _environmentId!.Assign(value); }
     }
 
     /// <summary>
@@ -87,6 +95,9 @@ public sealed class RadiusContainerConstruct : ProvisionableResource
         // underscores) that no longer matches `name`.
         _image = DefineProperty<string>(nameof(Image), ["properties", "containers", _containerName, "image"]);
         _applicationId = DefineProperty<string>(nameof(ApplicationId), ["properties", "application"]);
+        // The Radius.Compute/containers v2 schema requires an explicit environment reference
+        // so the control plane can resolve the recipe pack that provisions the container.
+        _environmentId = DefineProperty<string>(nameof(EnvironmentId), ["properties", "environment"]);
         _connections = DefineDictionaryProperty<ConnectionConstruct>(nameof(Connections), ["properties", "connections"]);
     }
 }

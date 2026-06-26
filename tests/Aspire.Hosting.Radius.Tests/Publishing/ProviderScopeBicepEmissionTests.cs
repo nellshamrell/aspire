@@ -16,7 +16,7 @@ public class ProviderScopeBicepEmissionTests
     private const string ClientId = "33333333-3333-3333-3333-333333333333";
 
     [Fact]
-    public void Azure_Provider_EmitsScope_AndNoSecretLiterals()
+    public void Azure_Provider_EmitsSubscriptionAndResourceGroup_AndNoSecretLiterals()
     {
         using var builder = Aspire.Hosting.Utils.TestDistributedApplicationBuilder.Create(DistributedApplicationOperation.Publish);
         var secret = builder.AddParameter("azureClientSecret", "secret-XYZ", secret: true);
@@ -33,7 +33,10 @@ public class ProviderScopeBicepEmissionTests
         var ctx = new RadiusBicepPublishingContext(envResource);
         var bicep = ctx.GenerateBicep(model, NullLogger.Instance);
 
-        Assert.Contains($"/subscriptions/{SubId}/resourceGroups/{Rg}", bicep);
+        // The native Radius.Core/environments schema models the Azure provider with
+        // discrete subscriptionId/resourceGroupName fields (not a single legacy scope path).
+        Assert.Contains($"subscriptionId: '{SubId}'", bicep);
+        Assert.Contains($"resourceGroupName: '{Rg}'", bicep);
         Assert.DoesNotContain("secret-XYZ", bicep);
         Assert.DoesNotContain(TenantId, bicep);
         Assert.DoesNotContain(ClientId, bicep);
@@ -59,7 +62,7 @@ public class ProviderScopeBicepEmissionTests
     }
 
     [Fact]
-    public void Aws_Provider_EmitsScope_AndNoSecretLiterals()
+    public void Aws_Provider_EmitsAccountAndRegion_AndNoSecretLiterals()
     {
         using var builder = Aspire.Hosting.Utils.TestDistributedApplicationBuilder.Create(DistributedApplicationOperation.Publish);
         var keyId = builder.AddParameter("awsKeyId", "AKIAEXAMPLE", secret: true);
@@ -78,13 +81,16 @@ public class ProviderScopeBicepEmissionTests
         var ctx = new RadiusBicepPublishingContext(envResource);
         var bicep = ctx.GenerateBicep(model, NullLogger.Instance);
 
-        Assert.Contains("/planes/aws/aws/accounts/123456789012/regions/us-west-2", bicep);
+        // The native Radius.Core/environments schema models the AWS provider with
+        // discrete accountId/region fields (not a single legacy scope path).
+        Assert.Contains("accountId: '123456789012'", bicep);
+        Assert.Contains("region: 'us-west-2'", bicep);
         Assert.DoesNotContain("AKIA-XYZ-secret", bicep);
         Assert.DoesNotContain("AKIAEXAMPLE", bicep);
     }
 
     [Fact]
-    public void Hybrid_Provider_EmitsBothScopes()
+    public void Hybrid_Provider_EmitsBothProviders()
     {
         using var builder = Aspire.Hosting.Utils.TestDistributedApplicationBuilder.Create(DistributedApplicationOperation.Publish);
         var secret = builder.AddParameter("s", "v", secret: true);
@@ -103,7 +109,9 @@ public class ProviderScopeBicepEmissionTests
         var ctx = new RadiusBicepPublishingContext(envResource);
         var bicep = ctx.GenerateBicep(model, NullLogger.Instance);
 
-        Assert.Contains($"/subscriptions/{SubId}/resourceGroups/{Rg}", bicep);
-        Assert.Contains("/planes/aws/aws/accounts/123456789012/regions/us-east-1", bicep);
+        Assert.Contains($"subscriptionId: '{SubId}'", bicep);
+        Assert.Contains($"resourceGroupName: '{Rg}'", bicep);
+        Assert.Contains("accountId: '123456789012'", bicep);
+        Assert.Contains("region: 'us-east-1'", bicep);
     }
 }

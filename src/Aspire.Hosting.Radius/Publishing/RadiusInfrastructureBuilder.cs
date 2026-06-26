@@ -775,12 +775,14 @@ internal sealed class RadiusInfrastructureBuilder
 
         if (annotation.Azure is { } azure)
         {
-            construct.AzureScope = BuildAzureScope(azure);
+            construct.AzureSubscriptionId = azure.SubscriptionId;
+            construct.AzureResourceGroupName = azure.ResourceGroup;
         }
 
         if (annotation.Aws is { } aws)
         {
-            construct.AwsScope = BuildAwsScope(aws);
+            construct.AwsAccountId = aws.AccountId;
+            construct.AwsRegion = aws.Region;
         }
     }
 

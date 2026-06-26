@@ -109,6 +109,49 @@ public class BicepGenerationSimpleTests
     }
 
     [Fact]
+    public void SimpleSingleContainer_EmitsEnvironmentReference()
+    {
+        // The Radius.Compute/containers v2 schema requires properties.environment so the
+        // control plane can resolve the recipe pack that provisions the container. Without
+        // it, shipped Radius cannot deploy the native container (it was the gap that forced
+        // the WithLegacyContainers() fallback).
+        using var builder = TestDistributedApplicationBuilder.Create(DistributedApplicationOperation.Publish);
+        builder.AddRadiusEnvironment("myenv");
+        builder.AddContainer("api", "myapp/api", "latest");
+
+        using var app = builder.Build();
+        var model = app.Services.GetRequiredService<DistributedApplicationModel>();
+        var radiusEnv = model.Resources.OfType<RadiusEnvironmentResource>().First();
+        RadiusTestHelper.AttachDeploymentTargets(radiusEnv, model);
+        var context = new RadiusBicepPublishingContext(radiusEnv);
+        var bicep = context.GenerateBicep(model);
+
+        Assert.Contains("Radius.Compute/containers@2025-08-01-preview", bicep);
+        Assert.Contains("environment: myenv.id", bicep);
+    }
+
+    [Fact]
+    public void SimpleSingleContainer_RegistersDefaultContainerRecipeInPack()
+    {
+        // Shipped Radius has no built-in recipe for Radius.Compute/containers, so the
+        // publisher must register the published container recipe in the env's recipe pack;
+        // otherwise `rad deploy` fails ("no recipe pack found for Radius.Compute/containers").
+        using var builder = TestDistributedApplicationBuilder.Create(DistributedApplicationOperation.Publish);
+        builder.AddRadiusEnvironment("myenv");
+        builder.AddContainer("api", "myapp/api", "latest");
+
+        using var app = builder.Build();
+        var model = app.Services.GetRequiredService<DistributedApplicationModel>();
+        var radiusEnv = model.Resources.OfType<RadiusEnvironmentResource>().First();
+        RadiusTestHelper.AttachDeploymentTargets(radiusEnv, model);
+        var context = new RadiusBicepPublishingContext(radiusEnv);
+        var bicep = context.GenerateBicep(model);
+
+        Assert.Contains("'Radius.Compute/containers': {", bicep);
+        Assert.Contains("ghcr.io/radius-project/kube-recipes/containers:latest", bicep);
+    }
+
+    [Fact]
     public void GenerateBicep_ProjectResourceWithoutContainerImage_ThrowsActionableError()
     {
         // The Aspire.Hosting.Radius integration does not yet build or push project images.

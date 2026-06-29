@@ -73,6 +73,14 @@ internal static partial class BicepPostProcessor
             infra.Add(resource);
         }
 
+        // Bicep `param` declarations referenced by recipe parameters bound to an
+        // Aspire ParameterResource. Declared once; secret-bound params are secure so
+        // no value is written to the published artifact (FR-003a).
+        foreach (var parameter in options.RecipeParameters.Values)
+        {
+            infra.Add(parameter);
+        }
+
         var plan = infra.Build(new ProvisioningBuildOptions());
         var compiled = plan.Compile();
 
@@ -173,9 +181,86 @@ internal static partial class BicepPostProcessor
         return value switch
         {
             string or int or long or bool or double or float or decimal => value,
+            IDictionary<string, object> dictionary => ToBicepObject(dictionary),
+            System.Collections.IEnumerable sequence => ToBicepArray(sequence),
             _ => throw new NotSupportedException(
                 $"Bicep parameter type '{value.GetType().Name}' is not supported. " +
-                $"Supported types: string, int, long, double, float, decimal, bool.")
+                $"Supported types: string, int, long, double, float, decimal, bool, " +
+                $"arrays/enumerables, and string-keyed objects.")
+        };
+    }
+
+    /// <summary>
+    /// Recursively converts a string-keyed object to a Bicep object literal,
+    /// preserving the Bicep type of each value (FR-003).
+    /// </summary>
+    private static BicepDictionary<object> ToBicepObject(IDictionary<string, object> dictionary)
+    {
+        var result = new BicepDictionary<object>();
+        var sink = (IDictionary<string, IBicepValue>)result;
+        foreach (var (key, value) in dictionary)
+        {
+            sink[key] = ToBicepValue(value);
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Recursively converts an enumerable to a Bicep array literal, preserving the
+    /// Bicep type of each element (FR-003). Strings are handled as scalars before
+    /// reaching this method.
+    /// </summary>
+    private static BicepList<object> ToBicepArray(System.Collections.IEnumerable sequence)
+    {
+        var result = new BicepList<object>();
+        foreach (var element in sequence)
+        {
+            result.Add(ToBicepArrayElement(element));
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Converts a single array element to a <see cref="BicepValue{T}"/>. Scalar elements
+    /// are wrapped directly. Nested arrays/objects as array elements are not supported.
+    /// </summary>
+    private static BicepValue<object> ToBicepArrayElement(object? element)
+    {
+        if (element is null)
+        {
+            throw new NotSupportedException("Null recipe parameter array elements are not supported.");
+        }
+
+        var literal = ToBicepLiteral(element);
+        if (literal is BicepDictionary<object> or BicepList<object>)
+        {
+            throw new NotSupportedException(
+                "Nested arrays or objects as array elements are not supported in recipe parameters. " +
+                "Use a string-keyed object whose values are arrays/objects instead.");
+        }
+
+        return new BicepValue<object>(literal);
+    }
+
+    /// <summary>
+    /// Converts a single value to an <see cref="IBicepValue"/>, recursing into nested
+    /// arrays and objects so their element/Bicep types are preserved. Nested collections
+    /// are returned directly (they are <see cref="IBicepValue"/>); scalars are wrapped.
+    /// </summary>
+    internal static IBicepValue ToBicepValue(object? value)
+    {
+        if (value is null)
+        {
+            throw new NotSupportedException("Null recipe parameter values are not supported.");
+        }
+
+        return ToBicepLiteral(value) switch
+        {
+            BicepDictionary<object> nestedObject => nestedObject,
+            BicepList<object> nestedArray => nestedArray,
+            var scalar => new BicepValue<object>(scalar)
         };
     }
 

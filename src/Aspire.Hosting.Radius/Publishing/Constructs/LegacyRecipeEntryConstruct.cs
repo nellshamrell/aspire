@@ -17,6 +17,7 @@ public sealed class LegacyRecipeEntryConstruct : ProvisionableConstruct
 {
     private BicepValue<string>? _templateKind;
     private BicepValue<string>? _templatePath;
+    private BicepDictionary<object>? _parameters;
 
     /// <summary>Recipe template kind (e.g., "bicep").</summary>
     public BicepValue<string> TemplateKind
@@ -32,10 +33,22 @@ public sealed class LegacyRecipeEntryConstruct : ProvisionableConstruct
         set { Initialize(); _templatePath!.Assign(value); }
     }
 
+    /// <summary>
+    /// Optional recipe parameters for this legacy entry. Populated only when the
+    /// environment declares recipe parameters (FR-005); left unassigned otherwise
+    /// so the <c>parameters</c> key is omitted from the emitted Bicep.
+    /// </summary>
+    public BicepDictionary<object> Parameters
+    {
+        get { Initialize(); return _parameters!; }
+        set { Initialize(); _parameters!.Assign(value); }
+    }
+
     /// <inheritdoc />
     protected override void DefineProvisionableProperties()
     {
         _templateKind = DefineProperty<string>(nameof(TemplateKind), ["templateKind"]);
         _templatePath = DefineProperty<string>(nameof(TemplatePath), ["templatePath"]);
+        _parameters = DefineDictionaryProperty<object>(nameof(Parameters), ["parameters"]);
     }
 }

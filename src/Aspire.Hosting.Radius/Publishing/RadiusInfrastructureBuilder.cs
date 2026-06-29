@@ -27,6 +27,13 @@ internal sealed class RadiusInfrastructureBuilder
     private readonly ILogger _logger;
 
     /// <summary>
+    /// Bicep <c>param</c> declarations accumulated for recipe parameter values bound to
+    /// an Aspire <see cref="ParameterResource"/>. Keyed by parameter name so each is
+    /// declared once; merged into the options bag at the end of <see cref="Build"/>.
+    /// </summary>
+    private readonly Dictionary<string, ProvisioningParameter> _recipeParameters = new(StringComparer.Ordinal);
+
+    /// <summary>
     /// Default recipe template paths per resource type.
     /// </summary>
     private static readonly Dictionary<string, string> s_defaultRecipeTemplates = new(StringComparer.Ordinal)
@@ -357,6 +364,14 @@ internal sealed class RadiusInfrastructureBuilder
             legacyAppConstruct, legacyEnvConstruct, instanceParents,
             containerConnectionTargets, legacyContainerConnectionTargets,
             identifierSnapshot);
+
+        // Surface recipe-parameter scopes that target a resource type with no emitted
+        // recipe entry (FR-011), and register any ParameterResource-backed Bicep params.
+        WarnUnmatchedResourceTypeScopes(udtRecipeEntries.Keys.Concat(legacyRecipeEntries.Keys));
+        foreach (var (name, parameter) in _recipeParameters)
+        {
+            options.RecipeParameters[name] = parameter;
+        }
 
         return options;
     }
@@ -868,9 +883,10 @@ internal sealed class RadiusInfrastructureBuilder
 
                 if (hasParameters)
                 {
+                    var sink = (IDictionary<string, IBicepValue>)construct.RecipeParameters;
                     foreach (var (key, value) in recipe.Parameters)
                     {
-                        construct.RecipeParameters[key] = BicepPostProcessor.ToBicepLiteral(value);
+                        sink[key] = BicepPostProcessor.ToBicepValue(value);
                     }
                 }
             }
@@ -906,7 +922,7 @@ internal sealed class RadiusInfrastructureBuilder
         }
     }
 
-    private static RadiusRecipePackConstruct CreateRecipePackConstruct(
+    private RadiusRecipePackConstruct CreateRecipePackConstruct(
         string identifier, Dictionary<string, RecipeEntry> recipeEntries)
     {
         var construct = new RadiusRecipePackConstruct(identifier);
@@ -917,10 +933,175 @@ internal sealed class RadiusInfrastructureBuilder
             var recipeEntry = new RecipeEntryConstruct();
             recipeEntry.RecipeKind = entry.RecipeKind;
             recipeEntry.RecipeLocation = entry.RecipeLocation;
+
+            var parameters = GetEffectiveRecipeParameters(type);
+            if (parameters is not null)
+            {
+                ApplyRecipeParameters(recipeEntry.Parameters, parameters);
+            }
+
             construct.Recipes[type] = recipeEntry;
         }
 
         return construct;
+    }
+
+    /// <summary>
+    /// Computes the effective recipe parameter set for a resource type by merging the
+    /// environment-wide parameters with any parameters scoped to that resource type.
+    /// Resource-type-scoped values win on key collision (FR-006). Returns
+    /// <see langword="null"/> when no parameters apply.
+    /// </summary>
+    private IReadOnlyDictionary<string, object>? GetEffectiveRecipeParameters(string resourceType)
+    {
+        var annotation = _environment.Annotations
+            .OfType<Annotations.RadiusRecipeParametersAnnotation>()
+            .FirstOrDefault();
+        if (annotation is null)
+        {
+            return null;
+        }
+
+        var effective = new Dictionary<string, object>(annotation.EnvironmentWide, StringComparer.Ordinal);
+
+        if (annotation.ByResourceType.TryGetValue(resourceType, out var scoped))
+        {
+            foreach (var (key, value) in scoped)
+            {
+                if (effective.ContainsKey(key))
+                {
+                    _logger.LogDebug(
+                        "Recipe parameter '{Key}' scoped to resource type '{ResourceType}' overrides the environment-wide value.",
+                        key, resourceType);
+                }
+
+                effective[key] = value;
+            }
+        }
+
+        return effective.Count == 0 ? null : effective;
+    }
+
+    /// <summary>
+    /// Serializes each effective recipe parameter into <paramref name="target"/>,
+    /// preserving Bicep type fidelity and emitting parameter references for bound
+    /// <see cref="ParameterResource"/> values and provider references.
+    /// </summary>
+    private void ApplyRecipeParameters(BicepDictionary<object> target, IReadOnlyDictionary<string, object> parameters)
+    {
+        var sink = (IDictionary<string, IBicepValue>)target;
+        foreach (var (key, value) in parameters)
+        {
+            sink[key] = ConvertRecipeParameterValue(value);
+        }
+    }
+
+    /// <summary>
+    /// Converts a single recipe parameter value to a Bicep value. Handles
+    /// <see cref="ParameterResource"/> bindings (emitted as a Bicep <c>param</c>
+    /// reference, never a resolved secret — FR-003a), provider-scope references
+    /// (FR-008), and literal/array/object values (FR-003).
+    /// </summary>
+    private IBicepValue ConvertRecipeParameterValue(object value)
+    {
+        switch (value)
+        {
+            case IResourceBuilder<ParameterResource> parameterBuilder:
+                return ParameterReference(GetOrAddRecipeParameter(parameterBuilder.Resource));
+            case ParameterResource parameterResource:
+                return ParameterReference(GetOrAddRecipeParameter(parameterResource));
+            case RadiusProviderReference providerReference:
+                return BicepPostProcessor.ToBicepValue(ResolveProviderReference(providerReference));
+            default:
+                return BicepPostProcessor.ToBicepValue(value);
+        }
+    }
+
+    /// <summary>
+    /// Wraps a Bicep <c>param</c> declaration as a value usable inside a recipe
+    /// <c>parameters</c> object (a reference to the parameter identifier).
+    /// </summary>
+    private static BicepValue<object> ParameterReference(ProvisioningParameter parameter)
+    {
+        BicepValue<object> reference = parameter;
+        return reference;
+    }
+
+    /// <summary>
+    /// Returns (creating once) the Bicep <c>param</c> declaration for an Aspire
+    /// <see cref="ParameterResource"/>. Secret parameters are declared secure so no
+    /// value is written to the published artifact (FR-003a).
+    /// </summary>
+    private ProvisioningParameter GetOrAddRecipeParameter(ParameterResource parameter)
+    {
+        if (!_recipeParameters.TryGetValue(parameter.Name, out var provisioningParameter))
+        {
+            provisioningParameter = new ProvisioningParameter(
+                BicepPostProcessor.SanitizeIdentifier(parameter.Name), typeof(string))
+            {
+                IsSecure = parameter.Secret,
+            };
+            _recipeParameters[parameter.Name] = provisioningParameter;
+        }
+
+        return provisioningParameter;
+    }
+
+    /// <summary>
+    /// Resolves a <see cref="RadiusProviderReference"/> to the corresponding scope value
+    /// from the cloud provider configured on this environment. Throws when the referenced
+    /// provider is not configured (FR-008).
+    /// </summary>
+    private string ResolveProviderReference(RadiusProviderReference reference)
+    {
+        var providers = _environment.Annotations
+            .OfType<Annotations.RadiusCloudProvidersAnnotation>()
+            .FirstOrDefault();
+
+        return reference.Field switch
+        {
+            RadiusProviderScopeField.Region =>
+                providers?.Aws?.Region ?? throw MissingProviderReference("AWS", "WithAwsProvider"),
+            RadiusProviderScopeField.AccountId =>
+                providers?.Aws?.AccountId ?? throw MissingProviderReference("AWS", "WithAwsProvider"),
+            RadiusProviderScopeField.SubscriptionId =>
+                providers?.Azure?.SubscriptionId ?? throw MissingProviderReference("Azure", "WithAzureProvider"),
+            RadiusProviderScopeField.ResourceGroup =>
+                providers?.Azure?.ResourceGroup ?? throw MissingProviderReference("Azure", "WithAzureProvider"),
+            _ => throw new NotSupportedException($"Unknown provider scope field '{reference.Field}'."),
+        };
+    }
+
+    private InvalidOperationException MissingProviderReference(string cloud, string configureMethod) =>
+        new($"A recipe parameter on Radius environment '{_environment.Name}' references {cloud} provider " +
+            $"configuration, but no {cloud} provider is configured. Call {configureMethod}(...) on the environment.");
+
+    /// <summary>
+    /// Emits a non-fatal warning for each resource-type-scoped parameter set whose
+    /// resource type has no recipe entry in the emitted recipe pack (FR-011).
+    /// </summary>
+    private void WarnUnmatchedResourceTypeScopes(IEnumerable<string> emittedResourceTypes)
+    {
+        var annotation = _environment.Annotations
+            .OfType<Annotations.RadiusRecipeParametersAnnotation>()
+            .FirstOrDefault();
+        if (annotation is null)
+        {
+            return;
+        }
+
+        var emitted = new HashSet<string>(emittedResourceTypes, StringComparer.Ordinal);
+        foreach (var resourceType in annotation.ByResourceType.Keys)
+        {
+            if (!emitted.Contains(resourceType))
+            {
+                _logger.LogWarning(
+                    "Recipe parameters were scoped to resource type '{ResourceType}' on Radius environment " +
+                    "'{Environment}', but no recipe entry of that type exists in the emitted recipe pack; " +
+                    "those parameters were ignored.",
+                    resourceType, _environment.Name);
+            }
+        }
     }
 
     private void AddLegacyRecipeEntry(
@@ -981,13 +1162,21 @@ internal sealed class RadiusInfrastructureBuilder
         foreach (var (resourceType, byName) in legacyRecipeEntries)
         {
             var inner = new BicepDictionary<LegacyRecipeEntryConstruct>();
+            var parameters = GetEffectiveRecipeParameters(resourceType);
             foreach (var (recipeName, entry) in byName)
             {
-                inner[recipeName] = new LegacyRecipeEntryConstruct
+                var legacyEntry = new LegacyRecipeEntryConstruct
                 {
                     TemplateKind = entry.RecipeKind,
                     TemplatePath = entry.RecipeLocation,
                 };
+
+                if (parameters is not null)
+                {
+                    ApplyRecipeParameters(legacyEntry.Parameters, parameters);
+                }
+
+                inner[recipeName] = legacyEntry;
             }
             construct.Recipes[resourceType] = inner;
         }

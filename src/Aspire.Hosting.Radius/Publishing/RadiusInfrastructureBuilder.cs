@@ -3,6 +3,7 @@
 
 #pragma warning disable ASPIRERADIUS002 // RadiusRecipe.Name signals upstream deprecation for callers; internal publisher code still reads it.
 
+using System.Text;
 using Aspire.Hosting.ApplicationModel;
 using Aspire.Hosting.Radius.Publishing.Constructs;
 using Aspire.Hosting.Radius.ResourceMapping;
@@ -32,6 +33,13 @@ internal sealed class RadiusInfrastructureBuilder
     /// declared once; merged into the options bag at the end of <see cref="Build"/>.
     /// </summary>
     private readonly Dictionary<string, ProvisioningParameter> _recipeParameters = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Maps each sanitized Bicep identifier to the originating Aspire parameter name, so two
+    /// distinct parameter names that sanitize to the same identifier are detected and rejected
+    /// (ASPIRERADIUS028) instead of emitting duplicate <c>param</c> declarations.
+    /// </summary>
+    private readonly Dictionary<string, string> _recipeParameterIdentifiers = new(StringComparer.Ordinal);
 
     /// <summary>
     /// Default recipe template paths per resource type.
@@ -107,17 +115,29 @@ internal sealed class RadiusInfrastructureBuilder
         // selections and customization recipes count, so a custom in-cluster sibling of a managed
         // resource (or two managed instances with different recipes) is detected (FR-007, INV-5).
         var effectiveLocationsByType = new Dictionary<string, HashSet<string?>>(StringComparer.Ordinal);
+        // For native (UDT) types, recipe *parameters* also bind once per type via the shared pack.
+        // Two instances with the same recipe location but different intrinsic parameters would
+        // last-write-win silently, so track a full signature (location + parameters) per type to
+        // detect that parameter divergence too (the location-only set above can't see it).
+        var effectiveSignaturesByType = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
         foreach (var resource in radiusResources)
         {
             var rt = resolvedTypes[resource].ResourceType;
-            var location = NormalizeRecipeLocation(
-                (GetManagedRecipe(resource) ?? GetCustomization(resource)?.Recipe)?.RecipeLocation);
+            var effectiveRecipe = GetManagedRecipe(resource) ?? GetCustomization(resource)?.Recipe;
+            var location = NormalizeRecipeLocation(effectiveRecipe?.RecipeLocation);
             if (!effectiveLocationsByType.TryGetValue(rt, out var locations))
             {
                 locations = new HashSet<string?>(StringComparer.Ordinal);
                 effectiveLocationsByType[rt] = locations;
             }
             locations.Add(location);
+
+            if (!effectiveSignaturesByType.TryGetValue(rt, out var signatures))
+            {
+                signatures = new HashSet<string>(StringComparer.Ordinal);
+                effectiveSignaturesByType[rt] = signatures;
+            }
+            signatures.Add(ComputeRecipeSignature(location, effectiveRecipe));
         }
 
         // A type is "divergent" when its instances do not all share a single effective recipe.
@@ -128,27 +148,36 @@ internal sealed class RadiusInfrastructureBuilder
         // recipe per resource type per environment, and UDT types support neither per-instance
         // recipe overrides nor named recipes. Emitting a `properties.recipe.recipeLocation` per UDT
         // instance is silently ignored by Radius — the instance would deploy with the type's single
-        // pack recipe, not its intended one — so a divergent UDT type would deploy incorrectly. Fail
-        // the publish with a clear diagnostic instead. Legacy Applications.* types are exempt because
-        // their environment still supports named recipes (see the per-instance legacy binding below).
+        // pack recipe, not its intended one — so a divergent UDT type would deploy incorrectly. The
+        // same applies to recipe *parameters*: a single pack entry carries one parameter set per
+        // type, so instances diverging only in parameters would last-write-win silently. Both forms
+        // of divergence are detected via the full signature (location + parameters). Fail the publish
+        // with a clear diagnostic instead. Legacy Applications.* types are exempt because their
+        // environment still supports named recipes (see the per-instance legacy binding below).
         // See: https://github.com/radius-project/radius/blob/main/eng/design-notes/extensibility/2025-06-compute-extensibility-feature-spec.md
         // ("only one Recipe per resource type is allowed per Environment") and
         // https://github.com/radius-project/radius/blob/main/eng/design-notes/extensibility/2025-02-user-defined-resource-type-feature-spec.md
-        foreach (var (resourceType, locations) in effectiveLocationsByType)
+        foreach (var (resourceType, signatures) in effectiveSignaturesByType)
         {
-            if (locations.Count > 1 && !IsLegacyResourceType(resourceType))
+            if (signatures.Count > 1 && !IsLegacyResourceType(resourceType))
             {
                 var conflicting = radiusResources
                     .Where(r => string.Equals(resolvedTypes[r].ResourceType, resourceType, StringComparison.Ordinal))
                     .Select(r => r.Name);
                 throw new InvalidOperationException(
                     $"Resources of Radius type '{resourceType}' ({string.Join(", ", conflicting)}) resolve to " +
-                    "different recipes, but Radius binds exactly one recipe per resource type per environment for " +
-                    "user-defined types (per-instance recipe overrides and named recipes are not supported). Use the " +
-                    "same recipe (or cloud-managed selection) for all instances of this type, or model them as " +
-                    "different resource types. Diagnostic: ASPIRERADIUS026.");
+                    "different recipes or recipe parameters, but Radius binds exactly one recipe (with one parameter " +
+                    "set) per resource type per environment for user-defined types (per-instance recipe overrides and " +
+                    "named recipes are not supported). Use the same recipe and parameters (or cloud-managed selection) " +
+                    "for all instances of this type, or model them as different resource types. Diagnostic: ASPIRERADIUS026.");
             }
         }
+
+        // Native (Radius.*) types bind exactly one recipe per type per environment and do not
+        // support per-instance recipe names or parameters. Reject user-supplied per-instance
+        // recipe configuration on native types (including native compute containers) with an
+        // actionable diagnostic instead of silently ignoring it (ASPIRERADIUS027).
+        RejectPerInstanceRecipeOnNativeTypes(radiusResources, computeResources, resolvedTypes);
 
         // Collect recipe entries: UDT types go into the recipe pack, legacy
         // Applications.* types are stashed for inline emission on the legacy env.
@@ -294,7 +323,7 @@ internal sealed class RadiusInfrastructureBuilder
 
             var typeInstance = CreateResourceTypeConstruct(
                 identifier, resource.Name, resourceType, apiVersion,
-                parentApp, parentEnv, effectiveRecipe,
+                parentApp, parentEnv, isLegacy, effectiveRecipe,
                 instanceRecipeNameOverride);
             options.ResourceTypeInstances.Add(typeInstance);
             typeInstancesByResourceName[resource.Name] = typeInstance;
@@ -688,6 +717,57 @@ internal sealed class RadiusInfrastructureBuilder
     }
 
     /// <summary>
+    /// Rejects user-supplied per-instance recipe configuration (a <see cref="RadiusRecipe.Name"/>
+    /// or <see cref="RadiusRecipe.Parameters"/>) on native (Radius.*) types — both backing UDT
+    /// resources and native compute containers. Radius binds exactly one recipe per resource type
+    /// per environment for user-defined types; per-instance recipe overrides and named recipes are
+    /// unsupported, so Radius would silently ignore the per-instance values. Fail the publish with
+    /// an actionable diagnostic (ASPIRERADIUS027) that points at the environment-level
+    /// <c>WithRecipeParameters(resourceType, ...)</c> API instead. The check is scoped to the user
+    /// customization recipe (not the system-supplied cloud-managed recipe) to avoid false positives.
+    /// </summary>
+    private void RejectPerInstanceRecipeOnNativeTypes(
+        List<IResource> radiusResources,
+        List<IResource> computeResources,
+        Dictionary<IResource, (string ResourceType, string ApiVersion)> resolvedTypes)
+    {
+        static bool CarriesUserRecipeConfig(RadiusResourceCustomization? customization)
+            => customization?.Recipe is { } recipe
+                && (recipe.Parameters.Count > 0 || !string.IsNullOrEmpty(recipe.Name));
+
+        foreach (var resource in radiusResources)
+        {
+            var resourceType = resolvedTypes[resource].ResourceType;
+            if (!IsLegacyResourceType(resourceType) && CarriesUserRecipeConfig(GetCustomization(resource)))
+            {
+                throw PerInstanceRecipeNotSupported(resource.Name, resourceType);
+            }
+        }
+
+        // Native compute containers route to Radius.Compute/containers (a UDT) unless the
+        // environment opts into legacy Applications.Core/containers via WithLegacyContainers().
+        // Their customization recipe is not emitted on the container construct today, so reject it
+        // explicitly rather than dropping it silently.
+        if (!_environment.UseLegacyContainers)
+        {
+            foreach (var resource in computeResources)
+            {
+                if (CarriesUserRecipeConfig(GetCustomization(resource)))
+                {
+                    throw PerInstanceRecipeNotSupported(resource.Name, RadiusResourceTypes.Containers);
+                }
+            }
+        }
+    }
+
+    private static InvalidOperationException PerInstanceRecipeNotSupported(string resourceName, string resourceType) =>
+        new($"Resource '{resourceName}' (Radius type '{resourceType}') declares a per-instance recipe name or " +
+            "parameters, but Radius binds exactly one recipe per resource type per environment for user-defined " +
+            "(Radius.*) types — per-instance recipe overrides and named recipes are not supported. Declare recipe " +
+            $"parameters at the environment level with WithRecipeParameters(\"{resourceType}\", ...) instead. " +
+            "Diagnostic: ASPIRERADIUS027.");
+
+    /// <summary>
     /// Returns the cloud-targeting recipe for <paramref name="resource"/> when it is
     /// marked cloud-managed on the environment being published (via
     /// <c>WithManagedResource</c>), or <see langword="null"/> when it is in-cluster.
@@ -841,52 +921,67 @@ internal sealed class RadiusInfrastructureBuilder
         return construct;
     }
 
-    private static RadiusResourceTypeConstruct CreateResourceTypeConstruct(
+    private RadiusResourceTypeConstruct CreateResourceTypeConstruct(
         string identifier, string resourceName, string resourceType, string apiVersion,
         ProvisionableResource appConstruct, ProvisionableResource envConstruct,
-        RadiusRecipe? recipe, string? instanceRecipeNameOverride = null)
+        bool isLegacy, RadiusRecipe? recipe, string? instanceRecipeNameOverride = null)
     {
         var construct = new RadiusResourceTypeConstruct(identifier, resourceType, apiVersion);
         construct.ResourceName = resourceName;
         construct.ApplicationId = BuildIdExpression(appConstruct);
         construct.EnvironmentId = BuildIdExpression(envConstruct);
 
-        // Divergent same-type materialization on a legacy type: bind this instance to its
-        // own named recipe (registered on the legacy environment) so it doesn't share
-        // the type's in-cluster "default" recipe (FR-007, INV-5).
-        var hasRecipeNameOverride = !string.IsNullOrEmpty(instanceRecipeNameOverride);
-        if (hasRecipeNameOverride)
+        // Instance-level recipe name/parameters apply only to legacy Applications.* types, whose
+        // environment still supports named recipes. Native (Radius.*) UDT instances bind their
+        // type's single recipe through the shared recipe pack and must never emit a per-instance
+        // recipe block — Radius silently ignores it. Their parameters are declared at the
+        // environment level via WithRecipeParameters(resourceType, ...). User per-instance misuse
+        // on native types is rejected earlier (ASPIRERADIUS027); this guard also prevents a
+        // cloud-managed recipe's parameters from leaking onto a native instance.
+        if (isLegacy)
         {
-            construct.RecipeName = instanceRecipeNameOverride!;
-        }
-
-        if (recipe is not null)
-        {
-            var hasExplicitName = !string.IsNullOrEmpty(recipe.Name);
-            var hasParameters = recipe.Parameters.Count > 0;
-
-            // Only emit the instance-level recipe name/parameters when the recipe
-            // carries them. A location-only recipe (e.g. a cloud-managed override)
-            // that is bound through the recipe pack needs no instance recipe block,
-            // and emitting an empty `parameters: {}` would produce Bicep the writer
-            // cannot serialize.
-            if (hasExplicitName || hasParameters)
+            // Divergent same-type materialization on a legacy type: bind this instance to its
+            // own named recipe (registered on the legacy environment) so it doesn't share
+            // the type's in-cluster "default" recipe (FR-007, INV-5).
+            var hasRecipeNameOverride = !string.IsNullOrEmpty(instanceRecipeNameOverride);
+            if (hasRecipeNameOverride)
             {
-                // A legacy per-instance name override (a divergent same-type instance bound
-                // to its own named recipe registered under its resource name) must win over
-                // the recipe's own Name; otherwise the instance would reference a recipe name
-                // that was never registered. Parameters are still emitted in either case.
-                if (!hasRecipeNameOverride)
-                {
-                    construct.RecipeName = hasExplicitName ? recipe.Name : "default";
-                }
+                construct.RecipeName = instanceRecipeNameOverride!;
+            }
 
-                if (hasParameters)
+            if (recipe is not null)
+            {
+                var hasExplicitName = !string.IsNullOrEmpty(recipe.Name);
+                var hasParameters = recipe.Parameters.Count > 0;
+
+                // Only emit the instance-level recipe name/parameters when the recipe
+                // carries them. A location-only recipe (e.g. a cloud-managed override)
+                // that is bound through the recipe pack needs no instance recipe block,
+                // and emitting an empty `parameters: {}` would produce Bicep the writer
+                // cannot serialize.
+                if (hasExplicitName || hasParameters)
                 {
-                    var sink = (IDictionary<string, IBicepValue>)construct.RecipeParameters;
-                    foreach (var (key, value) in recipe.Parameters)
+                    // A legacy per-instance name override (a divergent same-type instance bound
+                    // to its own named recipe registered under its resource name) must win over
+                    // the recipe's own Name; otherwise the instance would reference a recipe name
+                    // that was never registered. Parameters are still emitted in either case.
+                    if (!hasRecipeNameOverride)
                     {
-                        sink[key] = BicepPostProcessor.ToBicepValue(value);
+                        construct.RecipeName = hasExplicitName ? recipe.Name : "default";
+                    }
+
+                    if (hasParameters)
+                    {
+                        var sink = (IDictionary<string, IBicepValue>)construct.RecipeParameters;
+                        foreach (var (key, value) in recipe.Parameters)
+                        {
+                            // Route through ConvertRecipeParameterValue so per-resource params get
+                            // the same handling as environment-level params: ParameterResource
+                            // bindings emit a (secure) Bicep param reference and never a resolved
+                            // secret, and RadiusProviderReference resolves against the configured
+                            // cloud provider.
+                            sink[key] = ConvertRecipeParameterValue(value);
+                        }
                     }
                 }
             }
@@ -900,10 +995,20 @@ internal sealed class RadiusInfrastructureBuilder
         string resourceType,
         RadiusRecipe? recipe)
     {
+        // A native (Radius.*) type binds one recipe per type via the shared recipe pack, so a
+        // recipe's intrinsic parameters (e.g. a cloud-managed selection's RadiusRecipe.Parameters)
+        // belong on the pack entry, not on the resource instance. Snapshot them here so they can be
+        // emitted under the recipe pack; environment-level WithRecipeParameters(type, ...) is merged
+        // on top in CreateRecipePackConstruct. (User per-instance recipe parameters on native types
+        // are rejected earlier — ASPIRERADIUS027 — so this path only carries system/managed params.)
+        var parameters = recipe is { Parameters.Count: > 0 }
+            ? new Dictionary<string, object>(recipe.Parameters, StringComparer.Ordinal)
+            : null;
+
         // Custom recipe with template path
         if (recipe?.RecipeLocation is not null)
         {
-            entries[resourceType] = new RecipeEntry("bicep", recipe.RecipeLocation);
+            entries[resourceType] = new RecipeEntry("bicep", recipe.RecipeLocation, parameters);
             return;
         }
 
@@ -911,7 +1016,7 @@ internal sealed class RadiusInfrastructureBuilder
         if (s_defaultRecipeTemplates.TryGetValue(resourceType, out var defaultTemplate))
         {
             // Don't overwrite a custom entry
-            entries.TryAdd(resourceType, new RecipeEntry("bicep", defaultTemplate));
+            entries.TryAdd(resourceType, new RecipeEntry("bicep", defaultTemplate, parameters));
         }
         else
         {
@@ -921,6 +1026,76 @@ internal sealed class RadiusInfrastructureBuilder
                 resourceType);
         }
     }
+
+    /// <summary>
+    /// Computes a stable signature for an effective recipe (its normalized location plus its
+    /// intrinsic parameters) so that native (UDT) instances of the same type can be checked for
+    /// divergence. Native types bind one recipe — and one parameter set — per type via the shared
+    /// recipe pack, so any difference in this signature between same-type instances is a conflict.
+    /// </summary>
+    private static string ComputeRecipeSignature(string? normalizedLocation, RadiusRecipe? recipe)
+    {
+        // Each dynamic field is length-prefixed (`<len>:<value>`) so the concatenation is
+        // unambiguous even when a value contains the characters used as structural delimiters
+        // — two different field sets can never produce the same signature.
+        var builder = new StringBuilder();
+        AppendSignatureSegment(builder, normalizedLocation ?? string.Empty);
+        AppendSignatureSegment(builder, recipe?.Name ?? string.Empty);
+        AppendSignatureSegment(
+            builder,
+            recipe is { Parameters.Count: > 0 }
+                ? FormatRecipeParameterForSignature(recipe.Parameters)
+                : string.Empty);
+
+        return builder.ToString();
+    }
+
+    /// <summary>
+    /// Appends a length-prefixed segment (<c>&lt;length&gt;:&lt;value&gt;</c>) so concatenated
+    /// signature segments stay unambiguous regardless of the characters they contain.
+    /// </summary>
+    private static void AppendSignatureSegment(StringBuilder builder, string value)
+    {
+        builder.Append(value.Length);
+        builder.Append(':');
+        builder.Append(value);
+    }
+
+    /// <summary>Returns the length-prefixed encoding of a single signature segment.</summary>
+    private static string SignatureSegment(string value)
+        => $"{value.Length}:{value}";
+
+    /// <summary>
+    /// Formats a recipe parameter value for the divergence signature. Equal values must produce
+    /// equal text and distinct values distinct text (the formatter must be injective across every
+    /// supported value shape), so composite values are formatted recursively with length-prefixed
+    /// segments and bound <see cref="ParameterResource"/> values / provider references are
+    /// represented by their identity rather than a resolved literal. Mirrors the value shapes
+    /// <see cref="ConvertRecipeParameterValue"/> accepts.
+    /// </summary>
+    private static string FormatRecipeParameterForSignature(object? value)
+        => value switch
+        {
+            null => "null",
+            IResourceBuilder<ParameterResource> parameterBuilder => $"param:{parameterBuilder.Resource.Name}",
+            ParameterResource parameterResource => $"param:{parameterResource.Name}",
+            // Provider references share a runtime type, so distinguish them by their identity
+            // (cloud + scope field), not the type name a default ToString() would produce.
+            RadiusProviderReference providerReference => $"provider:{providerReference.Cloud}:{providerReference.Field}",
+            string s => $"s:{s}",
+            bool b => $"b:{(b ? "true" : "false")}",
+            // Objects are string-keyed maps; sort keys so member order doesn't affect the signature.
+            // Each key and child encoding is length-prefixed so embedded delimiters can't collide.
+            IReadOnlyDictionary<string, object> map =>
+                "{" + string.Concat(map.OrderBy(kv => kv.Key, StringComparer.Ordinal)
+                    .Select(kv => SignatureSegment(kv.Key) + SignatureSegment(FormatRecipeParameterForSignature(kv.Value)))) + "}",
+            // Arrays are order-sensitive, so preserve element order in the signature.
+            System.Collections.IEnumerable sequence =>
+                "[" + string.Concat(sequence.Cast<object?>().Select(v => SignatureSegment(FormatRecipeParameterForSignature(v)))) + "]",
+            // Numbers and other scalars: format invariantly so culture can't change the signature.
+            IFormattable formattable => $"v:{formattable.ToString(null, System.Globalization.CultureInfo.InvariantCulture)}",
+            _ => $"v:{value}",
+        };
 
     private RadiusRecipePackConstruct CreateRecipePackConstruct(
         string identifier, Dictionary<string, RecipeEntry> recipeEntries)
@@ -934,7 +1109,10 @@ internal sealed class RadiusInfrastructureBuilder
             recipeEntry.RecipeKind = entry.RecipeKind;
             recipeEntry.RecipeLocation = entry.RecipeLocation;
 
-            var parameters = GetEffectiveRecipeParameters(type);
+            // Merge the recipe's intrinsic parameters (carried from a managed/custom recipe) with
+            // environment-level WithRecipeParameters; the environment-level values override on key
+            // collision (the explicit user override wins).
+            var parameters = MergeRecipeParameters(entry.Parameters, GetEffectiveRecipeParameters(type));
             if (parameters is not null)
             {
                 ApplyRecipeParameters(recipeEntry.Parameters, parameters);
@@ -944,6 +1122,34 @@ internal sealed class RadiusInfrastructureBuilder
         }
 
         return construct;
+    }
+
+    /// <summary>
+    /// Merges a recipe's intrinsic parameters (the base layer) with the environment-level recipe
+    /// parameters (the override layer). Environment-level values win on key collision. Returns
+    /// <see langword="null"/> when neither layer contributes a parameter.
+    /// </summary>
+    private static IReadOnlyDictionary<string, object>? MergeRecipeParameters(
+        IReadOnlyDictionary<string, object>? recipeParameters,
+        IReadOnlyDictionary<string, object>? environmentParameters)
+    {
+        if (recipeParameters is null or { Count: 0 })
+        {
+            return environmentParameters;
+        }
+
+        if (environmentParameters is null or { Count: 0 })
+        {
+            return recipeParameters;
+        }
+
+        var merged = new Dictionary<string, object>(recipeParameters, StringComparer.Ordinal);
+        foreach (var (key, value) in environmentParameters)
+        {
+            merged[key] = value;
+        }
+
+        return merged;
     }
 
     /// <summary>
@@ -1036,12 +1242,26 @@ internal sealed class RadiusInfrastructureBuilder
     {
         if (!_recipeParameters.TryGetValue(parameter.Name, out var provisioningParameter))
         {
-            provisioningParameter = new ProvisioningParameter(
-                BicepPostProcessor.SanitizeIdentifier(parameter.Name), typeof(string))
+            var identifier = BicepPostProcessor.SanitizeIdentifier(parameter.Name);
+
+            // Two distinct parameter names can sanitize to the same Bicep identifier (e.g.
+            // "my-key" and "my.key" both become "my_key"). Emitting two `param my_key`
+            // declarations produces invalid Bicep, so fail with an actionable diagnostic
+            // (ASPIRERADIUS028) instead.
+            if (_recipeParameterIdentifiers.TryGetValue(identifier, out var existingName))
+            {
+                throw new InvalidOperationException(
+                    $"Recipe parameters bound to Aspire parameters '{existingName}' and '{parameter.Name}' both " +
+                    $"map to the Bicep identifier '{identifier}'. Rename one of the parameters so they produce " +
+                    "distinct Bicep identifiers. Diagnostic: ASPIRERADIUS028.");
+            }
+
+            provisioningParameter = new ProvisioningParameter(identifier, typeof(string))
             {
                 IsSecure = parameter.Secret,
             };
             _recipeParameters[parameter.Name] = provisioningParameter;
+            _recipeParameterIdentifiers[identifier] = parameter.Name;
         }
 
         return provisioningParameter;
@@ -1357,5 +1577,5 @@ internal sealed class RadiusInfrastructureBuilder
         }
     }
 
-    internal readonly record struct RecipeEntry(string RecipeKind, string RecipeLocation);
+    internal readonly record struct RecipeEntry(string RecipeKind, string RecipeLocation, IReadOnlyDictionary<string, object>? Parameters = null);
 }

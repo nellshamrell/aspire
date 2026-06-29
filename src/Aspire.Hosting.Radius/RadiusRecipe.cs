@@ -13,8 +13,15 @@ namespace Aspire.Hosting.Radius;
 /// <b>Upstream deprecation note</b>: Radius's user-defined resource type (UDT) model is
 /// retiring named recipes in favor of one recipe per resource type per environment.
 /// <see cref="Name"/> will continue to work with legacy portable resource types but should
-/// be considered deprecated for forward compatibility. <see cref="RecipeLocation"/> and
-/// <see cref="Parameters"/> remain valid under UDTs.
+/// be considered deprecated for forward compatibility.
+/// </para>
+/// <para>
+/// <b>Native (Radius.*) types</b>: per-instance <see cref="Name"/> and <see cref="Parameters"/>
+/// are <b>not</b> supported — Radius binds exactly one recipe per resource type per environment
+/// and would silently ignore per-instance values. Declaring them on a native type (or a native
+/// container) fails the publish with diagnostic <c>ASPIRERADIUS027</c>. Set recipe parameters at
+/// the environment level instead with <c>WithRecipeParameters(resourceType, ...)</c>.
+/// <see cref="RecipeLocation"/> remains valid for selecting the type's single recipe.
 /// </para>
 /// <para>
 /// See: https://github.com/radius-project/radius/blob/main/eng/design-notes/extensibility/2025-02-user-defined-resource-type-feature-spec.md

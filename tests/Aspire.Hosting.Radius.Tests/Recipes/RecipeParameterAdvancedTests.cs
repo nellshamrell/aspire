@@ -137,4 +137,105 @@ public class RecipeParameterAdvancedTests
 
         Assert.DoesNotContain("parameters: {", bicep);
     }
+
+    // Native (Radius.*) types reject per-instance recipe parameters: a native container that
+    // sets Recipe.Parameters via PublishAsRadiusResource fails the publish with ASPIRERADIUS027,
+    // directing the author to the environment-level WithRecipeParameters API instead.
+    [Fact]
+    public void NativeContainer_PerInstanceRecipeParameters_Throws()
+    {
+        using var builder = TestDistributedApplicationBuilder.Create(DistributedApplicationOperation.Publish);
+        builder.AddRadiusEnvironment("myenv");
+        builder.AddContainer("api", "myapp/api", "latest")
+            .PublishAsRadiusResource(c => c.Recipe = new RadiusRecipe { Parameters = { ["region"] = "us-west-2" } });
+
+        using var app = builder.Build();
+
+        var ex = Assert.Throws<InvalidOperationException>(() => Publish(app));
+        Assert.Contains("ASPIRERADIUS027", ex.Message);
+        Assert.Contains("WithRecipeParameters", ex.Message);
+    }
+
+    // A native backing UDT type (here forced via a custom TypeOverride) likewise cannot carry
+    // per-instance recipe parameters; the publish fails with ASPIRERADIUS027.
+    [Fact]
+    public void NativeBackingUdt_PerInstanceRecipeName_Throws()
+    {
+        using var builder = TestDistributedApplicationBuilder.Create(DistributedApplicationOperation.Publish);
+        builder.AddRadiusEnvironment("myenv");
+        builder.AddRedis("cache")
+            .PublishAsRadiusResource(c =>
+            {
+                c.TypeOverride = new RadiusResourceTypeReference("MyOrg.Custom/myRedis", "2025-01-01");
+                c.Recipe = new RadiusRecipe { Name = "custom" };
+            });
+
+        using var app = builder.Build();
+
+        var ex = Assert.Throws<InvalidOperationException>(() => Publish(app));
+        Assert.Contains("ASPIRERADIUS027", ex.Message);
+        Assert.Contains("MyOrg.Custom/myRedis", ex.Message);
+    }
+
+    // Legacy per-resource recipe parameters share the environment-level serialization contract:
+    // a ParameterResource binding emits a (secure) Bicep param reference, never the resolved secret.
+    [Fact]
+    public void LegacyPerResource_SecretParameterBinding_EmitsSecureParamReference()
+    {
+        using var builder = TestDistributedApplicationBuilder.Create(DistributedApplicationOperation.Publish);
+        var secret = builder.AddParameter("recipeSecret", "TopSecretValue", secret: true);
+        builder.AddRadiusEnvironment("myenv");
+        // Redis falls back to the legacy Applications.* recipe shape, which supports
+        // per-instance recipe parameters.
+        builder.AddRedis("cache")
+            .PublishAsRadiusResource(c => c.Recipe = new RadiusRecipe { Parameters = { ["apiKey"] = secret } });
+
+        using var app = builder.Build();
+        var bicep = Publish(app);
+
+        Assert.DoesNotContain("TopSecretValue", bicep);
+        Assert.Contains("param recipeSecret string", bicep);
+        Assert.Contains("@secure()", bicep);
+        Assert.Contains("apiKey: recipeSecret", bicep);
+    }
+
+    // Legacy per-resource recipe parameters also resolve a RadiusProviderReference against the
+    // environment's configured cloud provider, matching environment-level parameter behavior.
+    [Fact]
+    public void LegacyPerResource_ProviderReference_ResolvesRegion()
+    {
+        using var builder = TestDistributedApplicationBuilder.Create(DistributedApplicationOperation.Publish);
+        builder.AddRadiusEnvironment("myenv")
+            .WithAwsProvider("123456789012", "us-west-2", aws => aws.WithIrsa("arn:aws:iam::123456789012:role/radius"));
+        builder.AddRedis("cache")
+            .PublishAsRadiusResource(c => c.Recipe = new RadiusRecipe { Parameters = { ["region"] = RadiusProviderReference.AwsRegion } });
+
+        using var app = builder.Build();
+        var bicep = Publish(app);
+
+        Assert.Contains("region: 'us-west-2'", bicep);
+    }
+
+    // Two recipe parameters bound to distinct Aspire parameters whose names sanitize to the same
+    // Bicep identifier ("Radius" and "radiusenv" both map to "radiusenv") fail with ASPIRERADIUS028
+    // instead of emitting duplicate `param` declarations.
+    [Fact]
+    public void CollidingSanitizedParameterIdentifiers_Throws()
+    {
+        using var builder = TestDistributedApplicationBuilder.Create(DistributedApplicationOperation.Publish);
+        var first = builder.AddParameter("Radius", "v1");
+        var second = builder.AddParameter("radiusenv", "v2");
+        builder.AddRadiusEnvironment("myenv")
+            .WithRecipeParameters(p =>
+            {
+                p["a"] = first;
+                p["b"] = second;
+            });
+        builder.AddRedis("cache");
+
+        using var app = builder.Build();
+
+        var ex = Assert.Throws<InvalidOperationException>(() => Publish(app));
+        Assert.Contains("ASPIRERADIUS028", ex.Message);
+    }
 }

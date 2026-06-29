@@ -106,7 +106,7 @@ disjoint numeric ranges reserved so the IDs never collide:
 |-------|-----------|-------------|
 | `ASPIRERADIUS001`–`ASPIRERADIUS009` | Compile-time analyzer diagnostics for experimental APIs | `[Experimental]` warnings (suppressible), documented at `https://aka.ms/aspire/diagnostics/<id>` |
 | `ASPIRERADIUS010`–`ASPIRERADIUS019` | Cloud-provider configuration errors | Thrown `InvalidOperationException` (message includes the ID) |
-| `ASPIRERADIUS020`–`ASPIRERADIUS029` | Cloud-managed resource (`WithManagedResource`) validation | Thrown `ArgumentException` (config time) / `InvalidOperationException` (publish time) |
+| `ASPIRERADIUS020`–`ASPIRERADIUS029` | Cloud-managed resource (`WithManagedResource`) and recipe/recipe-parameter validation | Thrown `ArgumentException` (config time) / `InvalidOperationException` (publish time) |
 
 Runtime validation codes:
 
@@ -119,7 +119,9 @@ Runtime validation codes:
 | `ASPIRERADIUS023` | Config | A cloud-managed recipe is missing its `RecipeLocation`. |
 | `ASPIRERADIUS024` | Config | A child resource cannot be marked cloud-managed directly; mark its parent instead. |
 | `ASPIRERADIUS025` | Config | The resource does not map to a supported Radius backing resource type. |
-| `ASPIRERADIUS026` | Publish | Multiple instances of one user-defined (`Radius.*`) type resolve to different recipes; Radius binds one recipe per type per environment. |
+| `ASPIRERADIUS026` | Publish | Multiple instances of one user-defined (`Radius.*`) type resolve to different recipes or recipe parameters; Radius binds one recipe (with one parameter set) per type per environment. |
+| `ASPIRERADIUS027` | Publish | A per-instance recipe name or parameters were set (via `PublishAsRadiusResource(c => c.Recipe...)`) on a native (`Radius.*`) type or native container; these are unsupported. Use `WithRecipeParameters(resourceType, ...)` on the environment instead. |
+| `ASPIRERADIUS028` | Publish | Two recipe parameters bound to different Aspire parameters sanitize to the same Bicep identifier. Rename one so they produce distinct identifiers. |
 
 > `ASPIRERADIUS021` was retired: the cloud is taken from the explicit `RadiusCloud` argument
 > rather than inferred from the recipe location, so there is no cloud/recipe conflict to flag.

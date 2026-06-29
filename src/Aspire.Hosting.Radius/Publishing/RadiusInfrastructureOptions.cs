@@ -2,6 +2,7 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using Aspire.Hosting.Radius.Publishing.Constructs;
+using Azure.Provisioning;
 
 namespace Aspire.Hosting.Radius.Publishing;
 
@@ -65,4 +66,13 @@ public sealed class RadiusInfrastructureOptions
     /// registered in the target Radius environment.
     /// </summary>
     public List<LegacyContainerConstruct> LegacyContainers { get; } = [];
+
+    /// <summary>
+    /// Gets the Bicep <c>param</c> declarations referenced by recipe parameters that
+    /// are bound to an Aspire <c>ParameterResource</c>. Keyed by parameter name so a
+    /// parameter referenced by multiple recipe entries is declared once. These are
+    /// added to the generated infrastructure; secret-bound parameters are marked secure
+    /// so no value is written to the published file.
+    /// </summary>
+    internal Dictionary<string, ProvisioningParameter> RecipeParameters { get; } = new(StringComparer.Ordinal);
 }

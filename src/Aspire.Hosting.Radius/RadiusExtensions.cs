@@ -136,7 +136,7 @@ public static partial class RadiusExtensions
     /// what container resources use, so the publisher's existing
     /// <c>Registry</c>/<c>Image</c>/<c>Tag</c> assembly path applies uniformly.
     /// </remarks>
-    [Experimental("ASPIRERADIUS001", UrlFormat = "https://aka.ms/aspire/diagnostics/{0}")]
+    [Experimental("ASPIRERADIUS003", UrlFormat = "https://aka.ms/aspire/diagnostics/{0}")]
     [AspireExport]
     public static IResourceBuilder<ProjectResource> WithContainerImage(
         this IResourceBuilder<ProjectResource> builder,

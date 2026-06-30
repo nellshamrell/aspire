@@ -84,6 +84,22 @@ public class WithManagedResourceTests
         Assert.Equal(AzureRecipe, annotation.Selections["cache"].Recipe.RecipeLocation);
     }
 
+    [Theory]
+    [InlineData(RadiusCloud.None)]
+    [InlineData((RadiusCloud)42)]
+    public void WithManagedResource_InvalidCloud_Throws(RadiusCloud cloud)
+    {
+        var builder = DistributedApplication.CreateBuilder();
+        var env = AzureEnv(builder);
+        var cache = builder.AddRedis("cache");
+
+        var ex = Assert.Throws<ArgumentOutOfRangeException>(() =>
+            env.WithManagedResource(cache, cloud, new RadiusRecipe { RecipeLocation = AzureRecipe }));
+
+        Assert.Equal("cloud", ex.ParamName);
+        Assert.Contains("require a target cloud", ex.Message, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void WithManagedResource_NullResource_Throws()
     {

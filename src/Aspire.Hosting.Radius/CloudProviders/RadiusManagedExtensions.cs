@@ -45,7 +45,7 @@ public static class RadiusManagedExtensions
     /// <returns>The same environment builder for chaining.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="builder"/>, <paramref name="resource"/>, or <paramref name="recipe"/> is null.</exception>
     /// <exception cref="ArgumentException">
-    /// The target is a child resource (<c>ASPIRERADIUS024</c>), a compute workload
+    /// <paramref name="cloud"/> is not a supported cloud; the target is a child resource (<c>ASPIRERADIUS024</c>), a compute workload
     /// (<c>ASPIRERADIUS022</c>), or not a supported backing resource (<c>ASPIRERADIUS025</c>); or
     /// the recipe has no <see cref="RadiusRecipe.RecipeLocation"/> (<c>ASPIRERADIUS023</c>).
     /// </exception>
@@ -63,6 +63,7 @@ public static class RadiusManagedExtensions
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(resource);
         ArgumentNullException.ThrowIfNull(recipe);
+        ManagedValidation.ValidateCloud(cloud, nameof(cloud));
 
         var environment = builder.Resource;
         var target = resource.Resource;
@@ -103,7 +104,7 @@ public static class RadiusManagedExtensions
     /// <param name="recipeLocation">The OCI location of the cloud-targeting recipe.</param>
     /// <returns>The same environment builder for chaining.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="builder"/> or <paramref name="resource"/> is null.</exception>
-    /// <exception cref="ArgumentException"><paramref name="recipeLocation"/> is null/empty, or a validation rule fails (see the primary overload).</exception>
+    /// <exception cref="ArgumentException"><paramref name="recipeLocation"/> is null/empty, <paramref name="cloud"/> is not a supported cloud, or a validation rule fails (see the primary overload).</exception>
     // [AspireExportIgnore]: see the primary overload — the `IResourceBuilder<IResource>`
     // target parameter is not ATS-renderable (ASPIREEXPORT008).
     [AspireExportIgnore]

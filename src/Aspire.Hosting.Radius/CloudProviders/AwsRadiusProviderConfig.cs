@@ -13,7 +13,7 @@ namespace Aspire.Hosting.Radius.CloudProviders;
 /// <param name="AccountId">12-digit AWS account ID.</param>
 /// <param name="Region">AWS region code (e.g. <c>us-west-2</c>).</param>
 /// <param name="Credential">Selected credential mode (Access Key or IRSA).</param>
-public sealed record AwsRadiusProviderConfig(
+internal sealed record AwsRadiusProviderConfig(
     string AccountId,
     string Region,
     AwsRadiusCredential Credential);
@@ -22,7 +22,7 @@ public sealed record AwsRadiusProviderConfig(
 /// Discriminated base for the AWS credential mode chosen via the
 /// <c>WithAwsProvider</c> callback. Use one of the sealed subtypes.
 /// </summary>
-public abstract record AwsRadiusCredential
+internal abstract record AwsRadiusCredential
 {
     private AwsRadiusCredential()
     {
@@ -35,7 +35,7 @@ public abstract record AwsRadiusCredential
     /// </summary>
     /// <param name="AccessKeyId">Parameter carrying the AWS access key id.</param>
     /// <param name="SecretAccessKey">Parameter carrying the AWS secret access key.</param>
-    public sealed record AccessKey(
+    internal sealed record AccessKey(
         IResourceBuilder<ParameterResource> AccessKeyId,
         IResourceBuilder<ParameterResource> SecretAccessKey) : AwsRadiusCredential;
 
@@ -45,6 +45,6 @@ public abstract record AwsRadiusCredential
     /// hosting Kubernetes cluster's OIDC provider.
     /// </summary>
     /// <param name="IamRoleArn">Fully-qualified IAM role ARN to assume.</param>
-    public sealed record Irsa(
+    internal sealed record Irsa(
         string IamRoleArn) : AwsRadiusCredential;
 }

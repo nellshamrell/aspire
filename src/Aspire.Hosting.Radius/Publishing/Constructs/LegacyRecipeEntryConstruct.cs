@@ -1,6 +1,9 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+#pragma warning disable ASPIRERADIUS004 // Experimental: ConfigureRadiusInfrastructure escape-hatch construct types are consumed internally by the publisher.
+
+using System.Diagnostics.CodeAnalysis;
 using Azure.Provisioning;
 using Azure.Provisioning.Primitives;
 
@@ -13,6 +16,7 @@ namespace Aspire.Hosting.Radius.Publishing.Constructs;
 /// <c>templatePath</c> (the new <c>recipeKind</c> / <c>recipeLocation</c> keys
 /// are only valid on <c>Radius.Core/recipePacks</c>).
 /// </summary>
+[Experimental("ASPIRERADIUS004", UrlFormat = "https://aka.ms/aspire/diagnostics/{0}")]
 public sealed class LegacyRecipeEntryConstruct : ProvisionableConstruct
 {
     private BicepValue<string>? _templateKind;

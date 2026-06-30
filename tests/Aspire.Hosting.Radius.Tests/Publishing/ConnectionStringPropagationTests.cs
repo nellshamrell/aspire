@@ -93,7 +93,7 @@ public class ConnectionStringPropagationTests
     }
 
     [Fact]
-    public void NoHardcodedSecrets_InBicep()
+    public async Task NoHardcodedSecrets_InBicep()
     {
         using var builder = TestDistributedApplicationBuilder.Create(DistributedApplicationOperation.Publish);
         builder.AddRadiusEnvironment("myenv");
@@ -104,12 +104,18 @@ public class ConnectionStringPropagationTests
         using var app = builder.Build();
         var model = app.Services.GetRequiredService<DistributedApplicationModel>();
         var radiusEnv = model.Resources.OfType<RadiusEnvironmentResource>().First();
+
+        // Resolve the generated Redis password so we can assert its literal value never lands in the
+        // artifact. WithReference surfaces it as a container env var, which must be routed through a
+        // @secure() Bicep param rather than emitted inline.
+        var redisPassword = await cache.Resource.PasswordParameter!.GetValueAsync(default) ?? string.Empty;
+
         RadiusTestHelper.AttachDeploymentTargets(radiusEnv, model);
         var context = new RadiusBicepPublishingContext(radiusEnv);
         var bicep = context.GenerateBicep(model);
 
-        // No hardcoded connection strings or passwords
-        Assert.DoesNotContain("password", bicep, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("connectionstring", bicep, StringComparison.OrdinalIgnoreCase);
+        // The secret value itself must never be hardcoded; it is delivered via a secure param.
+        Assert.DoesNotContain(redisPassword, bicep, StringComparison.Ordinal);
+        Assert.Contains("@secure()", bicep);
     }
 }

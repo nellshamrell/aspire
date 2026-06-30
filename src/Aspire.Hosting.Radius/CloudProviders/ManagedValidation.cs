@@ -42,6 +42,21 @@ internal static class ManagedValidation
     }
 
     /// <summary>
+    /// Validates that a cloud-managed selection targets a real cloud provider.
+    /// </summary>
+    internal static void ValidateCloud(RadiusCloud cloud, string paramName)
+    {
+        if (cloud is not RadiusCloud.Azure and not RadiusCloud.Aws)
+        {
+            throw new ArgumentOutOfRangeException(
+                paramName,
+                cloud,
+                $"Cloud-managed resources require a target cloud of {nameof(RadiusCloud.Azure)} or {nameof(RadiusCloud.Aws)}. " +
+                $"{nameof(RadiusCloud.None)} is the default value and is not a valid cloud selection.");
+        }
+    }
+
+    /// <summary>
     /// <c>ASPIRERADIUS024</c>: a child resource (e.g. a database on a server) cannot be
     /// marked cloud-managed directly; publishing represents it via its parent, so the
     /// selection must be applied to the parent resource instead.

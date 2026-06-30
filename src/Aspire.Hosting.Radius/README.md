@@ -9,7 +9,7 @@ Provides extensions and resource definitions for an Aspire AppHost to publish an
 ### Prerequisites
 
 * A Kubernetes cluster (for example `kind`, `minikube`, AKS) with [Radius](https://docs.radapp.io/installation/) installed.
-* The `rad` CLI on PATH. Version must match the pinned Radius Bicep extension this integration emits (currently `0.51`). Run `rad version` to check.
+* The `rad` CLI on PATH. Version must match the pinned Radius Bicep extension this integration emits (currently `0.59`). Run `rad version` to check.
 * `rad init` has been run against the target cluster so the workspace and environment exist.
 
 ### Install the package
@@ -38,7 +38,7 @@ aspire deploy
 ## Supported resources
 
 * `AddContainer(...)` — published as a Radius container workload (`Radius.Compute/containers`).
-* `AddProject<T>(...)` — published as a Radius container workload referencing `{name}:latest`. You must build and push the image to a registry the cluster can pull from before running `rad deploy`. Full project image build/push integration is planned.
+* `AddProject<T>(...)` — published as a Radius container workload only when the project has a pre-built image attached with `WithContainerImage("<registry>/<image>:<tag>")`. Without one, `aspire publish` fails with a remediation message to build and push an image the cluster can pull.
 * Selected resources with a Radius mapping (e.g. Redis, MongoDB, RabbitMQ, Dapr building blocks) emit Radius "legacy" types via the resource type mapper. Child database resources (for example `AddSqlServer("sql").AddDatabase("appdb")`) are collapsed onto the parent today.
 
 Other Aspire resource types are not emitted; only the resources listed above appear in the generated Bicep.
@@ -90,10 +90,12 @@ Supported credential modes:
 | AWS   | Access Key        | `aws.WithAccessKey(accessKeyId, secretAccessKey)` |
 | AWS   | IRSA              | `aws.WithIrsa(iamRoleArn)` |
 
-Secret material (Azure SP client secret, AWS access-key pair) must be supplied
+Cloud-provider credential secret material (Azure SP client secret, AWS access-key pair) must be supplied
 via `builder.AddParameter(..., secret: true)`. The integration never inlines
-secret values into Bicep or manifests; they are resolved at deploy time and
-redacted from any logged command line.
+those credential values into Bicep or manifests; `rad credential register` resolves them during
+deploy and redacts them from any logged command line. Recipe-parameter secrets bound to
+Aspire parameters are emitted as valueless Bicep parameters today, not delivered by this
+credential-registration path.
 
 See [specs/003-cloud-providers/quickstart.md](../../../specs/003-cloud-providers/quickstart.md) for an end-to-end walkthrough.
 
@@ -125,6 +127,12 @@ Runtime validation codes:
 
 > `ASPIRERADIUS021` was retired: the cloud is taken from the explicit `RadiusCloud` argument
 > rather than inferred from the recipe location, so there is no cloud/recipe conflict to flag.
+
+For native `Radius.*` types, recipe parameters are configured at the environment/type scope; per-instance recipe parameters are rejected with `ASPIRERADIUS027`, and environment/type-scoped values override the recipe's intrinsic parameters. The per-resource-over-type-over-environment precedence applies only to legacy `Applications.*` types.
+
+## Known limitations
+
+* For `ASPIRERADIUS011`, AWS access-key credential conflicts are compared by the Aspire parameter name that supplies the access-key ID, not by the resolved access-key value. Two environments that use different parameter names for the same key can be flagged as a false conflict, while the same parameter name with different values is not flagged.
 
 ## Additional documentation
 

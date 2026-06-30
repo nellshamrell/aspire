@@ -61,6 +61,8 @@ public class RadiusEnvironmentResourceTests
 
         var expression = ((IComputeEnvironmentResource)environment).GetHostAddressExpression(endpoint);
 
-        Assert.Equal("my-service.svc.cluster.local", expression.ValueExpression);
+        // The namespace segment is required for the FQDN to resolve across namespaces; the
+        // default environment namespace is "default".
+        Assert.Equal("my-service.default.svc.cluster.local", expression.ValueExpression);
     }
 }

@@ -1,9 +1,12 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+#pragma warning disable ASPIRERADIUS004 // Experimental: ConfigureRadiusInfrastructure escape-hatch construct types are consumed internally by the publisher.
+
 using Aspire.Hosting.ApplicationModel;
 using Aspire.Hosting.Radius;
 using Aspire.Hosting.Radius.Publishing;
+using System.Diagnostics.CodeAnalysis;
 
 namespace Aspire.Hosting;
 
@@ -74,6 +77,7 @@ public static class RadiusPublishExtensions
     // The escape-hatch stays C#-only by design; polyglot AppHosts use PublishAsRadiusResource
     // for per-resource customization instead. See ASPIREEXPORT008.
     [AspireExportIgnore]
+    [Experimental("ASPIRERADIUS004", UrlFormat = "https://aka.ms/aspire/diagnostics/{0}")]
     public static IResourceBuilder<RadiusEnvironmentResource> ConfigureRadiusInfrastructure(
         this IResourceBuilder<RadiusEnvironmentResource> builder,
         Action<RadiusInfrastructureOptions> configure)

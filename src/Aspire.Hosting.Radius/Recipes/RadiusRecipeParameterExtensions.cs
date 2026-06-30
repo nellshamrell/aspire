@@ -21,11 +21,15 @@ namespace Aspire.Hosting;
 /// <see cref="Radius.RadiusProviderReference"/> (e.g. <c>RadiusProviderReference.AwsRegion</c>).
 /// </para>
 /// <para>
-/// <b>Precedence</b>: when the same parameter key is set at more than one scope, the most
-/// specific scope wins — a per-resource recipe parameter (set via
-/// <c>PublishAsRadiusResource</c>) overrides a resource-type-scoped parameter, which
-/// overrides an environment-wide parameter. Keys that do not collide are merged (union).
-/// Repeated calls for the same scope also merge, with the later call winning per key.
+/// <b>Precedence</b>: scope handling differs by resource type.
+/// For legacy <c>Applications.*</c> types, the most specific scope wins — a per-resource
+/// recipe parameter (set via <c>PublishAsRadiusResource</c>) overrides a resource-type-scoped
+/// parameter, which overrides an environment-wide parameter.
+/// For native <c>Radius.*</c> UDT types, per-instance recipe parameters are <b>not</b>
+/// supported and are rejected (<c>ASPIRERADIUS027</c>): a UDT type binds exactly one recipe
+/// per type per environment, so environment-level and resource-type-scoped parameters are
+/// authoritative. Keys that do not collide are merged (union). Repeated calls for the same
+/// scope also merge, with the later call winning per key.
 /// </para>
 /// </remarks>
 public static class RadiusRecipeParameterExtensions

@@ -112,6 +112,11 @@ public sealed class RadiusEnvironmentResource : Resource, IComputeEnvironmentRes
     public ReferenceExpression GetHostAddressExpression(EndpointReference endpointReference)
     {
         var resource = endpointReference.Resource;
-        return ReferenceExpression.Create($"{resource.Name}.svc.cluster.local");
+        // Kubernetes service DNS for a resource deployed to this environment's namespace is
+        // `<service>.<namespace>.svc.cluster.local`. The namespace segment is required: without
+        // it the name only resolves for callers already inside the same namespace, so cross-
+        // namespace (and fully-qualified) service discovery breaks. Use the environment's
+        // configured Namespace so this tracks WithNamespace(...)/the `default` fallback.
+        return ReferenceExpression.Create($"{resource.Name}.{Namespace}.svc.cluster.local");
     }
 }

@@ -6,8 +6,10 @@
       ASPIRERADIUS002 (RadiusRecipe.Name) is intentionally surfaced as Experimental for end users
       to telegraph that named recipe selection is going away under Radius's UDT model. Tests need
       to exercise that property to cover the legacy/transition code paths in the publisher.
+      ASPIRERADIUS004 marks the ConfigureRadiusInfrastructure escape hatch and the construct/options
+      AST it exposes; tests assert directly against that evolving AST.
     -->
-    <NoWarn>$(NoWarn);ASPIRERADIUS002</NoWarn>
+    <NoWarn>$(NoWarn);ASPIRERADIUS002;ASPIRERADIUS004</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>

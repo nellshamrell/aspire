@@ -13,7 +13,7 @@ namespace Aspire.Hosting.Radius.CloudProviders;
 /// <param name="SubscriptionId">Azure subscription GUID.</param>
 /// <param name="ResourceGroup">Resource-group name within the subscription.</param>
 /// <param name="Credential">Selected credential mode (Service Principal or Workload Identity).</param>
-public sealed record AzureRadiusProviderConfig(
+internal sealed record AzureRadiusProviderConfig(
     string SubscriptionId,
     string ResourceGroup,
     AzureRadiusCredential Credential);
@@ -22,7 +22,7 @@ public sealed record AzureRadiusProviderConfig(
 /// Discriminated base for the Azure credential mode chosen via the
 /// <c>WithAzureProvider</c> callback. Use one of the sealed subtypes.
 /// </summary>
-public abstract record AzureRadiusCredential
+internal abstract record AzureRadiusCredential
 {
     private AzureRadiusCredential()
     {
@@ -37,7 +37,7 @@ public abstract record AzureRadiusCredential
     /// <param name="TenantId">Azure tenant GUID.</param>
     /// <param name="ClientId">Service principal application (client) GUID.</param>
     /// <param name="ClientSecret">Parameter resource carrying the client secret value.</param>
-    public sealed record ServicePrincipal(
+    internal sealed record ServicePrincipal(
         string TenantId,
         string ClientId,
         IResourceBuilder<ParameterResource> ClientSecret) : AzureRadiusCredential;
@@ -49,7 +49,7 @@ public abstract record AzureRadiusCredential
     /// </summary>
     /// <param name="TenantId">Azure tenant GUID.</param>
     /// <param name="ClientId">Workload identity client (application) GUID.</param>
-    public sealed record WorkloadIdentity(
+    internal sealed record WorkloadIdentity(
         string TenantId,
         string ClientId) : AzureRadiusCredential;
 }

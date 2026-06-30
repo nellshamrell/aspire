@@ -1,6 +1,8 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+#pragma warning disable ASPIRERADIUS004 // Experimental: ConfigureRadiusInfrastructure escape-hatch construct types are consumed internally by the publisher.
+
 #pragma warning disable ASPIREPIPELINES001
 #pragma warning disable ASPIREPIPELINES004
 
@@ -67,7 +69,22 @@ internal sealed class RadiusBicepPublishingContext
                 context.Services.GetRequiredService<ILoggerFactory>().CreateLogger<ResourceTypeMapper>());
             var builder = new RadiusInfrastructureBuilder(_environment, model, typeMapper, logger);
 
-            var options = builder.Build();
+            var options = await builder.BuildAsync(context.ExecutionContext, cancellationToken).ConfigureAwait(false);
+
+            // Persist the param-identifier -> ParameterResource bindings on the environment so the
+            // deploy step (which shares this resource instance) can resolve a value for every
+            // valueless Bicep `param` and forward it via `rad deploy --parameters`. An annotation
+            // is used because that is how the credential-register step shares state across steps.
+            if (options.RecipeParameterBindings.Count > 0)
+            {
+                var existing = _environment.Annotations.OfType<RadiusDeployParametersAnnotation>().ToList();
+                foreach (var stale in existing)
+                {
+                    _environment.Annotations.Remove(stale);
+                }
+
+                _environment.Annotations.Add(new RadiusDeployParametersAnnotation(options.RecipeParameterBindings));
+            }
 
             var resourceCount = options.Environments.Count + options.Applications.Count
                 + options.RecipePacks.Count + options.ResourceTypeInstances.Count
@@ -130,7 +147,7 @@ internal sealed class RadiusBicepPublishingContext
         var typeMapper = new ResourceTypeMapper(logger);
         var builder = new RadiusInfrastructureBuilder(_environment, model, typeMapper, logger);
 
-        var options = builder.Build();
+        var options = BuildOptionsCore(builder);
         return BicepPostProcessor.CompileBicep(options, _environment.Name, logger);
     }
 
@@ -145,7 +162,18 @@ internal sealed class RadiusBicepPublishingContext
         var typeMapper = new ResourceTypeMapper(logger);
         var builder = new RadiusInfrastructureBuilder(_environment, model, typeMapper, logger);
 
-        return builder.Build();
+        return BuildOptionsCore(builder);
+    }
+
+    /// <summary>
+    /// Synchronously drives the async build with a publish-mode execution context. The test
+    /// helpers are synchronous for ergonomics; the build only awaits in-memory model resolution,
+    /// so blocking here cannot deadlock.
+    /// </summary>
+    private static RadiusInfrastructureOptions BuildOptionsCore(RadiusInfrastructureBuilder builder)
+    {
+        var executionContext = new DistributedApplicationExecutionContext(DistributedApplicationOperation.Publish);
+        return builder.BuildAsync(executionContext, CancellationToken.None).GetAwaiter().GetResult();
     }
 
     private static void LogRecipePackSummary(RadiusInfrastructureOptions options, ILogger logger)

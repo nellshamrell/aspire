@@ -1,6 +1,10 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+#pragma warning disable ASPIRERADIUS004 // Experimental: ConfigureRadiusInfrastructure escape-hatch construct types are consumed internally by the publisher.
+
+using System.Diagnostics.CodeAnalysis;
+using Aspire.Hosting.ApplicationModel;
 using Aspire.Hosting.Radius.Publishing.Constructs;
 using Azure.Provisioning;
 
@@ -17,6 +21,7 @@ namespace Aspire.Hosting.Radius.Publishing;
 /// referenced by this options bag as an advanced escape hatch that may shift
 /// shape across releases of <c>Aspire.Hosting.Radius</c>.
 /// </remarks>
+[Experimental("ASPIRERADIUS004", UrlFormat = "https://aka.ms/aspire/diagnostics/{0}")]
 public sealed class RadiusInfrastructureOptions
 {
     /// <summary>
@@ -75,4 +80,11 @@ public sealed class RadiusInfrastructureOptions
     /// so no value is written to the published file.
     /// </summary>
     internal Dictionary<string, ProvisioningParameter> RecipeParameters { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Gets the mapping from emitted Bicep parameter identifier to the originating Aspire
+    /// <see cref="ParameterResource"/>. The deploy step uses this to resolve a value for every
+    /// valueless <c>param</c> the build emits and forward it via <c>rad deploy --parameters</c>.
+    /// </summary>
+    internal Dictionary<string, ParameterResource> RecipeParameterBindings { get; } = new(StringComparer.Ordinal);
 }

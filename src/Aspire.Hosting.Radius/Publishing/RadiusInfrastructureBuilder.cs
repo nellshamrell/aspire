@@ -1,8 +1,14 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-#pragma warning disable ASPIRERADIUS002 // RadiusRecipe.Name signals upstream deprecation for callers; internal publisher code still reads it.
+#pragma warning disable ASPIRERADIUS004 // Experimental: ConfigureRadiusInfrastructure escape-hatch construct types are consumed internally by the publisher.
 
+#pragma warning disable ASPIRERADIUS002 // RadiusRecipe.Name signals upstream deprecation for callers; internal publisher code still reads it.
+#pragma warning disable ASPIRECOMPUTE002 // GetEndpointPropertyExpression/GetHostAddressExpression are experimental compute-environment APIs the publisher relies on.
+
+using System.Globalization;
+using System.Net.Sockets;
+using System.Runtime.CompilerServices;
 using System.Text;
 using Aspire.Hosting.ApplicationModel;
 using Aspire.Hosting.Radius.Publishing.Constructs;
@@ -30,9 +36,24 @@ internal sealed class RadiusInfrastructureBuilder
     /// <summary>
     /// Bicep <c>param</c> declarations accumulated for recipe parameter values bound to
     /// an Aspire <see cref="ParameterResource"/>. Keyed by parameter name so each is
-    /// declared once; merged into the options bag at the end of <see cref="Build"/>.
+    /// declared once; merged into the options bag at the end of <see cref="BuildAsync"/>.
     /// </summary>
     private readonly Dictionary<string, ProvisioningParameter> _recipeParameters = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Maps each emitted Bicep parameter identifier to the originating Aspire
+    /// <see cref="ParameterResource"/>. The deploy step uses this to resolve and forward a
+    /// value for every valueless <c>param</c> the build emits (recipe-parameter bindings and
+    /// secret/parameter-backed container env vars) via <c>rad deploy --parameters</c>.
+    /// </summary>
+    private readonly Dictionary<string, ParameterResource> _recipeParameterBindings = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Publish-mode execution context used to resolve container environment variables and
+    /// service-discovery values. Set at the start of <see cref="BuildAsync"/>.
+    /// </summary>
+    private DistributedApplicationExecutionContext _executionContext = null!;
+    private CancellationToken _cancellationToken;
 
     /// <summary>
     /// Maps each sanitized Bicep identifier to the originating Aspire parameter name, so two
@@ -79,8 +100,18 @@ internal sealed class RadiusInfrastructureBuilder
     /// Builds the Bicep AST and populates a <see cref="RadiusInfrastructureOptions"/> with
     /// typed constructs. Runs <c>ConfigureRadiusInfrastructure</c> callbacks last (last-write-wins).
     /// </summary>
-    internal RadiusInfrastructureOptions Build()
+    /// <param name="executionContext">
+    /// Publish-mode execution context used to resolve container environment variables and
+    /// service-discovery values from the application model.
+    /// </param>
+    /// <param name="cancellationToken">A token to cancel the build.</param>
+    internal async Task<RadiusInfrastructureOptions> BuildAsync(
+        DistributedApplicationExecutionContext executionContext,
+        CancellationToken cancellationToken)
     {
+        _executionContext = executionContext;
+        _cancellationToken = cancellationToken;
+
         var options = new RadiusInfrastructureOptions();
         var envIdentifier = BicepPostProcessor.SanitizeIdentifier(_environment.Name);
 
@@ -345,17 +376,24 @@ internal sealed class RadiusInfrastructureBuilder
 
             WarnIfImageMayNotPull(resource.Name, image);
 
+            // Resolve the resource's environment variables (config, connection strings, OTEL_*,
+            // WithEnvironment, and `services__*` service discovery) and its endpoint ports the
+            // same way the Kubernetes publisher does, so the deployed container behaves like the
+            // local run. Secret/parameter values are routed to Bicep `param`s (never literals).
+            var env = await ResolveEnvironmentAsync(resource).ConfigureAwait(false);
+            var ports = ResolvePorts(resource);
+
             if (useLegacyContainers)
             {
                 var legacyContainerConstruct = CreateLegacyContainerConstruct(
-                    identifier, resource.Name, image, legacyAppConstruct!, connectionTargets);
+                    identifier, resource.Name, image, legacyAppConstruct!, connectionTargets, env, ports);
                 options.LegacyContainers.Add(legacyContainerConstruct);
                 legacyContainerConnectionTargets[legacyContainerConstruct] = connectionTargets;
             }
             else
             {
                 var containerConstruct = CreateContainerConstruct(
-                    identifier, resource.Name, image, appConstruct!, envConstruct!, connectionTargets);
+                    identifier, resource.Name, image, appConstruct!, envConstruct!, connectionTargets, env, ports);
                 options.Containers.Add(containerConstruct);
                 containerConnectionTargets[containerConstruct] = connectionTargets;
             }
@@ -400,6 +438,13 @@ internal sealed class RadiusInfrastructureBuilder
         foreach (var (name, parameter) in _recipeParameters)
         {
             options.RecipeParameters[name] = parameter;
+        }
+
+        // Surface the param-identifier -> ParameterResource bindings so the deploy step can
+        // resolve a value for every valueless `param` at deploy time (rad deploy --parameters).
+        foreach (var (identifier, parameter) in _recipeParameterBindings)
+        {
+            options.RecipeParameterBindings[identifier] = parameter;
         }
 
         return options;
@@ -1262,9 +1307,32 @@ internal sealed class RadiusInfrastructureBuilder
             };
             _recipeParameters[parameter.Name] = provisioningParameter;
             _recipeParameterIdentifiers[identifier] = parameter.Name;
+            // Remember the originating ParameterResource keyed by the Bicep identifier so the
+            // deploy step can pass `--parameters <identifier>=<value>` for this valueless param.
+            _recipeParameterBindings[identifier] = parameter;
         }
 
         return provisioningParameter;
+    }
+
+    /// <summary>
+    /// Rolls back any recipe parameters allocated after <paramref name="parameterNamesBefore"/>
+    /// was snapshotted. Used to keep per-environment-variable resolution all-or-nothing: a
+    /// variable that ultimately can't be emitted must not leave its secure <c>param</c> (and the
+    /// associated deploy-time binding) behind in the artifact.
+    /// </summary>
+    private void RollbackRecipeParameters(HashSet<string> parameterNamesBefore)
+    {
+        var addedNames = _recipeParameters.Keys.Where(name => !parameterNamesBefore.Contains(name)).ToList();
+        foreach (var name in addedNames)
+        {
+            var provisioningParameter = _recipeParameters[name];
+            _recipeParameters.Remove(name);
+
+            var identifier = provisioningParameter.BicepIdentifier;
+            _recipeParameterIdentifiers.Remove(identifier);
+            _recipeParameterBindings.Remove(identifier);
+        }
     }
 
     /// <summary>
@@ -1496,7 +1564,9 @@ internal sealed class RadiusInfrastructureBuilder
         string identifier, string resourceName, string image,
         RadiusApplicationConstruct appConstruct,
         RadiusEnvironmentConstruct envConstruct,
-        Dictionary<string, RadiusResourceTypeConstruct> connectionTargets)
+        Dictionary<string, RadiusResourceTypeConstruct> connectionTargets,
+        IReadOnlyDictionary<string, ContainerEnvVarConstruct> env,
+        IReadOnlyDictionary<string, ContainerPortConstruct> ports)
     {
         var construct = new RadiusContainerConstruct(identifier, resourceName);
         construct.ContainerName = resourceName;
@@ -1514,13 +1584,25 @@ internal sealed class RadiusInfrastructureBuilder
             }
         }
 
+        foreach (var (name, envVar) in env)
+        {
+            construct.Env[name] = envVar;
+        }
+
+        foreach (var (name, port) in ports)
+        {
+            construct.Ports[name] = port;
+        }
+
         return construct;
     }
 
     private static LegacyContainerConstruct CreateLegacyContainerConstruct(
         string identifier, string resourceName, string image,
         LegacyApplicationConstruct legacyAppConstruct,
-        Dictionary<string, RadiusResourceTypeConstruct> connectionTargets)
+        Dictionary<string, RadiusResourceTypeConstruct> connectionTargets,
+        IReadOnlyDictionary<string, ContainerEnvVarConstruct> env,
+        IReadOnlyDictionary<string, ContainerPortConstruct> ports)
     {
         var construct = new LegacyContainerConstruct(identifier);
         construct.ContainerName = resourceName;
@@ -1537,8 +1619,339 @@ internal sealed class RadiusInfrastructureBuilder
             }
         }
 
+        foreach (var (name, envVar) in env)
+        {
+            construct.Env[name] = envVar;
+        }
+
+        foreach (var (name, port) in ports)
+        {
+            construct.Ports[name] = port;
+        }
+
         return construct;
     }
+
+    /// <summary>
+    /// Maps a compute resource's <see cref="EndpointAnnotation"/>s to Radius container ports,
+    /// keyed by endpoint name. Uses the target (container) port when specified, otherwise the
+    /// allocated/declared port. Endpoints with no resolvable port are skipped.
+    /// </summary>
+    private static Dictionary<string, ContainerPortConstruct> ResolvePorts(IResource resource)
+    {
+        var ports = new Dictionary<string, ContainerPortConstruct>(StringComparer.Ordinal);
+        if (!resource.TryGetAnnotationsOfType<EndpointAnnotation>(out var endpoints))
+        {
+            return ports;
+        }
+
+        foreach (var endpoint in endpoints)
+        {
+            // Prefer the target (in-container) port; fall back to the declared host port. In
+            // publish mode neither may be allocated yet, in which case there is nothing to emit.
+            var portValue = endpoint.TargetPort ?? endpoint.Port;
+            if (portValue is not int containerPort)
+            {
+                continue;
+            }
+
+            var port = new ContainerPortConstruct
+            {
+                ContainerPort = containerPort,
+                Protocol = endpoint.Protocol == ProtocolType.Udp ? "UDP" : "TCP",
+            };
+            ports[endpoint.Name] = port;
+        }
+
+        return ports;
+    }
+
+    /// <summary>
+    /// Resolves a compute resource's environment variables into Radius container <c>env</c>
+    /// entries. Mirrors the Kubernetes publisher: HTTPS service-discovery variables are dropped
+    /// (no in-cluster TLS), endpoint references become cluster-FQDN URLs via the environment's
+    /// <see cref="RadiusEnvironmentResource.GetHostAddressExpression"/>, and secret/parameter
+    /// values are routed to Bicep <c>param</c>s so no literal secret is written to the artifact.
+    /// </summary>
+    private async Task<Dictionary<string, ContainerEnvVarConstruct>> ResolveEnvironmentAsync(IResource resource)
+    {
+        var result = new Dictionary<string, ContainerEnvVarConstruct>(StringComparer.Ordinal);
+        if (resource is not IResourceWithEnvironment)
+        {
+            return result;
+        }
+
+        var context = new EnvironmentCallbackContext(_executionContext, resource, cancellationToken: _cancellationToken)
+        {
+            Logger = _logger,
+        };
+
+        if (resource.TryGetAnnotationsOfType<EnvironmentCallbackAnnotation>(out var callbacks))
+        {
+            foreach (var callback in callbacks)
+            {
+                await callback.Callback(context).ConfigureAwait(false);
+            }
+        }
+
+        // Drop HTTPS service-discovery variables: containers in the cluster don't terminate TLS
+        // (ingress/service mesh does), so an https `services__*` URL would be unreachable. This
+        // matches RemoveHttpsServiceDiscoveryVariables in the Kubernetes/Docker Compose publishers.
+        var httpsServiceKeys = context.EnvironmentVariables
+            .Where(kvp => kvp.Value is EndpointReference epRef
+                && epRef.Scheme == "https"
+                && kvp.Key.StartsWith("services__", StringComparison.Ordinal))
+            .Select(kvp => kvp.Key)
+            .ToList();
+        foreach (var key in httpsServiceKeys)
+        {
+            context.EnvironmentVariables.Remove(key);
+        }
+
+        foreach (var (key, rawValue) in context.EnvironmentVariables)
+        {
+            var parts = new List<EnvPart>();
+
+            // Snapshot the recipe-parameter keys so that, if this variable fails to resolve, any
+            // secure `param` allocated mid-resolution (e.g. a backing resource's password) can be
+            // rolled back. Otherwise a skipped variable would still leak its parameter into the
+            // artifact. Resolution must be all-or-nothing per variable.
+            var parameterKeysBefore = new HashSet<string>(_recipeParameters.Keys, StringComparer.Ordinal);
+
+            try
+            {
+                await ResolveEnvPartsAsync(rawValue, resource, parts).ConfigureAwait(false);
+            }
+            catch (InvalidOperationException ex)
+            {
+                // Some endpoint references cannot be resolved at publish time — e.g. a non-HTTP
+                // scheme (redis, tcp, ...) whose port isn't allocated yet. Those backing resources
+                // are surfaced through Radius `connection`s instead of literal container env vars,
+                // so skip the variable rather than failing the whole build.
+                RollbackRecipeParameters(parameterKeysBefore);
+                _logger.LogDebug(ex, "Skipping environment variable '{Key}' on resource '{Resource}': value could not be resolved at publish time.", key, resource.Name);
+                continue;
+            }
+
+            result[key] = new ContainerEnvVarConstruct { Value = BuildEnvBicepValue(parts) };
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// A single resolved fragment of an environment-variable value: either a literal string
+    /// chunk or a reference to a Bicep <c>param</c> (used for secret/parameter-backed values so
+    /// the literal never lands in the artifact).
+    /// </summary>
+    private readonly record struct EnvPart(string? Literal, ProvisioningParameter? Parameter)
+    {
+        public static EnvPart FromLiteral(string literal) => new(literal, null);
+        public static EnvPart FromParameter(ProvisioningParameter parameter) => new(null, parameter);
+    }
+
+    /// <summary>
+    /// Recursively flattens an environment-variable value into ordered <see cref="EnvPart"/>s.
+    /// Endpoint references resolve to cluster-FQDN URLs, parameter resources resolve to Bicep
+    /// <c>param</c> references, and composite reference expressions are spliced together so a
+    /// mixed literal/secret value is preserved precisely.
+    /// </summary>
+    private async Task ResolveEnvPartsAsync(object? value, IResource owner, List<EnvPart> parts)
+    {
+        switch (value)
+        {
+            case null:
+                return;
+            case string s:
+                parts.Add(EnvPart.FromLiteral(s));
+                return;
+            case bool b:
+                parts.Add(EnvPart.FromLiteral(b ? "true" : "false"));
+                return;
+            case ParameterResource param:
+                parts.Add(EnvPart.FromParameter(GetOrAddRecipeParameter(param)));
+                return;
+            case IResourceBuilder<ParameterResource> paramBuilder:
+                parts.Add(EnvPart.FromParameter(GetOrAddRecipeParameter(paramBuilder.Resource)));
+                return;
+            case EndpointReference endpointReference:
+                parts.Add(EnvPart.FromLiteral(ResolveEndpointUrl(endpointReference)));
+                return;
+            case EndpointReferenceExpression endpointReferenceExpression:
+                parts.Add(EnvPart.FromLiteral(ResolveEndpointProperty(endpointReferenceExpression)));
+                return;
+            case ConnectionStringReference connectionStringReference:
+                await ResolveEnvPartsAsync(connectionStringReference.Resource.ConnectionStringExpression, owner, parts).ConfigureAwait(false);
+                return;
+            case IResourceWithConnectionString resourceWithConnectionString:
+                await ResolveEnvPartsAsync(resourceWithConnectionString.ConnectionStringExpression, owner, parts).ConfigureAwait(false);
+                return;
+            case ReferenceExpression referenceExpression:
+                await ResolveReferenceExpressionPartsAsync(referenceExpression, owner, parts).ConfigureAwait(false);
+                return;
+            case IFormattable formattable:
+                parts.Add(EnvPart.FromLiteral(formattable.ToString(null, CultureInfo.InvariantCulture)));
+                return;
+            default:
+                // Fall back to publish-mode resolution (e.g. manifest expression providers) and
+                // capture whatever literal string the framework produces.
+                if (value is IValueProvider valueProvider)
+                {
+                    var context = new ValueProviderContext { ExecutionContext = _executionContext, Caller = owner };
+                    var resolved = await valueProvider.GetValueAsync(context, _cancellationToken).ConfigureAwait(false);
+                    parts.Add(EnvPart.FromLiteral(resolved ?? string.Empty));
+                    return;
+                }
+
+                parts.Add(EnvPart.FromLiteral(value.ToString() ?? string.Empty));
+                return;
+        }
+    }
+
+    /// <summary>
+    /// Splices a composite <see cref="ReferenceExpression"/> into ordered parts by interleaving
+    /// its literal <see cref="ReferenceExpression.Format"/> chunks with the recursively-resolved
+    /// parts of each value provider (matching the <c>{0}</c>, <c>{1}</c>, ... placeholders).
+    /// </summary>
+    private async Task ResolveReferenceExpressionPartsAsync(ReferenceExpression expression, IResource owner, List<EnvPart> parts)
+    {
+        // No providers: the format string is already the literal value (after un-escaping braces).
+        if (expression.ValueProviders.Count == 0)
+        {
+            parts.Add(EnvPart.FromLiteral(UnescapeBraces(expression.Format)));
+            return;
+        }
+
+        // Pre-resolve each provider's parts so the placeholder splice is a simple lookup.
+        var providerParts = new List<EnvPart>[expression.ValueProviders.Count];
+        for (var i = 0; i < expression.ValueProviders.Count; i++)
+        {
+            var inner = new List<EnvPart>();
+            await ResolveEnvPartsAsync(expression.ValueProviders[i], owner, inner).ConfigureAwait(false);
+            providerParts[i] = inner;
+        }
+
+        // Walk the format string, emitting literal text and substituting `{i}` placeholders.
+        // Braces are escaped as `{{`/`}}` in composite expression formats.
+        var format = expression.Format;
+        var literal = new StringBuilder();
+        for (var i = 0; i < format.Length; i++)
+        {
+            var c = format[i];
+            if (c == '{')
+            {
+                if (i + 1 < format.Length && format[i + 1] == '{')
+                {
+                    literal.Append('{');
+                    i++;
+                    continue;
+                }
+
+                var close = format.IndexOf('}', i + 1);
+                var indexText = format.Substring(i + 1, close - i - 1);
+                var index = int.Parse(indexText, CultureInfo.InvariantCulture);
+
+                if (literal.Length > 0)
+                {
+                    parts.Add(EnvPart.FromLiteral(literal.ToString()));
+                    literal.Clear();
+                }
+
+                parts.AddRange(providerParts[index]);
+                i = close;
+                continue;
+            }
+
+            if (c == '}' && i + 1 < format.Length && format[i + 1] == '}')
+            {
+                literal.Append('}');
+                i++;
+                continue;
+            }
+
+            literal.Append(c);
+        }
+
+        if (literal.Length > 0)
+        {
+            parts.Add(EnvPart.FromLiteral(literal.ToString()));
+        }
+    }
+
+    private static string UnescapeBraces(string format) =>
+        format.Replace("{{", "{", StringComparison.Ordinal).Replace("}}", "}", StringComparison.Ordinal);
+
+    /// <summary>
+    /// Builds a Bicep value from ordered env parts: a pure-literal value emits a plain string,
+    /// a single parameter emits a bare <c>param</c> reference, and a mix emits an interpolated
+    /// Bicep string so secret parameters stay out of the literal artifact.
+    /// </summary>
+    private static BicepValue<string> BuildEnvBicepValue(List<EnvPart> parts)
+    {
+        if (parts.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        if (parts.Count == 1)
+        {
+            var only = parts[0];
+            if (only.Parameter is { } singleParameter)
+            {
+                BicepValue<string> reference = singleParameter;
+                return reference;
+            }
+
+            return only.Literal ?? string.Empty;
+        }
+
+        if (parts.All(p => p.Parameter is null))
+        {
+            return string.Concat(parts.Select(p => p.Literal ?? string.Empty));
+        }
+
+        // Mixed literal/parameter content: build a FormattableString whose literal text is the
+        // concatenated literal chunks (with braces escaped) and whose args are the parameters,
+        // then compile it to an interpolated Bicep string via BicepFunction.Interpolate.
+        var formatBuilder = new StringBuilder();
+        var args = new List<object>();
+        foreach (var part in parts)
+        {
+            if (part.Parameter is { } parameter)
+            {
+                formatBuilder.Append('{').Append(args.Count.ToString(CultureInfo.InvariantCulture)).Append('}');
+                args.Add(parameter);
+            }
+            else
+            {
+                formatBuilder.Append((part.Literal ?? string.Empty)
+                    .Replace("{", "{{", StringComparison.Ordinal)
+                    .Replace("}", "}}", StringComparison.Ordinal));
+            }
+        }
+
+        var formattable = FormattableStringFactory.Create(formatBuilder.ToString(), args.ToArray());
+        return BicepFunction.Interpolate(formattable);
+    }
+
+    /// <summary>
+    /// Resolves an <see cref="EndpointReference"/> to a cluster-FQDN URL (<c>scheme://host:port</c>)
+    /// using the environment's <see cref="RadiusEnvironmentResource.GetHostAddressExpression"/> so
+    /// the namespace-qualified service name is used.
+    /// </summary>
+    private string ResolveEndpointUrl(EndpointReference endpointReference) =>
+        ResolveHostExpression(((IComputeEnvironmentResource)_environment).GetEndpointPropertyExpression(endpointReference.Property(EndpointProperty.Url)));
+
+    private string ResolveEndpointProperty(EndpointReferenceExpression endpointReferenceExpression) =>
+        ResolveHostExpression(((IComputeEnvironmentResource)_environment).GetEndpointPropertyExpression(endpointReferenceExpression));
+
+    /// <summary>
+    /// Resolves a <see cref="ReferenceExpression"/> produced by the environment's endpoint
+    /// helpers to a literal string. The host address is a literal cluster FQDN, so the whole
+    /// expression resolves synchronously without needing the run-mode value pipeline.
+    /// </summary>
+    private static string ResolveHostExpression(ReferenceExpression expression) =>
+        expression.GetValueAsync(CancellationToken.None).AsTask().GetAwaiter().GetResult() ?? string.Empty;
 
     /// <summary>
     /// Warns when a container image may not pull correctly without <c>imagePullPolicy</c>.

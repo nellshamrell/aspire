@@ -1,10 +1,13 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+#pragma warning disable ASPIRERADIUS004 // Experimental: ConfigureRadiusInfrastructure escape-hatch construct types are consumed internally by the publisher.
+
 #pragma warning disable ASPIREPIPELINES001
 #pragma warning disable ASPIREPIPELINES004
 
 using System.Diagnostics;
+using Aspire.Hosting.ApplicationModel;
 using Aspire.Hosting.Pipelines;
 using Aspire.Hosting.Utils;
 using Microsoft.Extensions.Logging;
@@ -74,6 +77,12 @@ internal sealed class RadiusDeploymentPipelineStep
 
         logger.LogInformation("Starting rad deploy with Bicep file '{BicepPath}'", bicepPath);
 
+        // Resolve a value for every Bicep `param` that was bound to an Aspire ParameterResource
+        // during publish. The generated Bicep declares these as valueless params, so `rad deploy`
+        // must receive each one via `--parameters name=value`. Secret-bound values are collected
+        // so they can be scrubbed from the logged command and rad stdout/stderr.
+        var (parameterArgs, secretValues) = await ResolveDeployParametersAsync(cancellationToken).ConfigureAwait(false);
+
         var deployTask = await context.ReportingStep.CreateTaskAsync(
             $"Deploying Radius environment '{_environment.Name}' via rad deploy...",
             cancellationToken).ConfigureAwait(false);
@@ -97,13 +106,24 @@ internal sealed class RadiusDeploymentPipelineStep
             };
             process.StartInfo.ArgumentList.Add("deploy");
             process.StartInfo.ArgumentList.Add(bicepPath);
+            foreach (var arg in parameterArgs)
+            {
+                process.StartInfo.ArgumentList.Add(arg);
+            }
+
+            // Mirror the credential step: log the full command but with any secret parameter
+            // values replaced by '***' so they never reach the console or log sinks.
+            var loggedArgs = RadCredentialRegisterStep.RedactSecretValues(
+                string.Join(' ', process.StartInfo.ArgumentList), secretValues);
+            logger.LogInformation("Running: rad {Args}", loggedArgs);
 
             process.OutputDataReceived += (_, e) =>
             {
                 if (e.Data is not null)
                 {
-                    logger.LogInformation("rad (stdout): {Output}", e.Data);
-                    context.ReportingStep.Log(LogLevel.Information, e.Data);
+                    var redacted = RadCredentialRegisterStep.RedactSecretValues(e.Data, secretValues);
+                    logger.LogInformation("rad (stdout): {Output}", redacted);
+                    context.ReportingStep.Log(LogLevel.Information, redacted);
                 }
             };
 
@@ -111,9 +131,10 @@ internal sealed class RadiusDeploymentPipelineStep
             {
                 if (e.Data is not null)
                 {
-                    stderrBuilder.AppendLine(e.Data);
-                    logger.LogWarning("rad (stderr): {Error}", e.Data);
-                    context.ReportingStep.Log(LogLevel.Warning, e.Data);
+                    var redacted = RadCredentialRegisterStep.RedactSecretValues(e.Data, secretValues);
+                    stderrBuilder.AppendLine(redacted);
+                    logger.LogWarning("rad (stderr): {Error}", redacted);
+                    context.ReportingStep.Log(LogLevel.Warning, redacted);
                 }
             };
 
@@ -170,6 +191,43 @@ internal sealed class RadiusDeploymentPipelineStep
             context.ReportingStep.Log(LogLevel.Error, ex.Message);
             throw;
         }
+    }
+
+    /// <summary>
+    /// Resolves deploy-time values for every Bicep parameter that was bound to an Aspire
+    /// <see cref="ParameterResource"/> during publish (recorded on the environment via
+    /// <see cref="RadiusDeployParametersAnnotation"/>). Returns the <c>--parameters name=value</c>
+    /// argument tokens plus the set of secret values to scrub from logs.
+    /// </summary>
+    private async Task<(IReadOnlyList<string> Args, IReadOnlyList<string> SecretValues)> ResolveDeployParametersAsync(
+        CancellationToken cancellationToken)
+    {
+        var annotation = _environment.Annotations.OfType<RadiusDeployParametersAnnotation>().LastOrDefault();
+        if (annotation is null || annotation.Parameters.Count == 0)
+        {
+            return (Array.Empty<string>(), Array.Empty<string>());
+        }
+
+        var args = new List<string>();
+        var secretValues = new List<string>();
+
+        // Order by identifier for deterministic command construction (stable logs and tests).
+        foreach (var (identifier, parameter) in annotation.Parameters.OrderBy(static p => p.Key, StringComparer.Ordinal))
+        {
+            var value = await parameter.GetValueAsync(cancellationToken).ConfigureAwait(false) ?? string.Empty;
+
+            // `rad deploy` accepts repeated `--parameters name=value` flags. The name/value pair is
+            // a single token so paths/values with spaces survive via ArgumentList verbatim.
+            args.Add("--parameters");
+            args.Add($"{identifier}={value}");
+
+            if (parameter.Secret && !string.IsNullOrWhiteSpace(value))
+            {
+                secretValues.Add(value);
+            }
+        }
+
+        return (args, secretValues);
     }
 
     /// <summary>

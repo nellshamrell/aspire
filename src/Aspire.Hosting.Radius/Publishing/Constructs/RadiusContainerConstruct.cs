@@ -1,6 +1,9 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+#pragma warning disable ASPIRERADIUS004 // Experimental: ConfigureRadiusInfrastructure escape-hatch construct types are consumed internally by the publisher.
+
+using System.Diagnostics.CodeAnalysis;
 using Azure.Provisioning;
 using Azure.Provisioning.Primitives;
 
@@ -14,6 +17,7 @@ namespace Aspire.Hosting.Radius.Publishing.Constructs;
 /// The <c>imagePullPolicy</c> property has been removed from the v2 schema.
 /// See: https://github.com/radius-project/radius/blob/main/eng/design-notes/extensibility/2025-08-container-resource-type.md
 /// </remarks>
+[Experimental("ASPIRERADIUS004", UrlFormat = "https://aka.ms/aspire/diagnostics/{0}")]
 public sealed class RadiusContainerConstruct : ProvisionableResource
 {
     private readonly string _containerName;
@@ -22,6 +26,8 @@ public sealed class RadiusContainerConstruct : ProvisionableResource
     private BicepValue<string>? _applicationId;
     private BicepValue<string>? _environmentId;
     private BicepDictionary<ConnectionConstruct>? _connections;
+    private BicepDictionary<ContainerEnvVarConstruct>? _env;
+    private BicepDictionary<ContainerPortConstruct>? _ports;
 
     /// <summary>The resource name.</summary>
     public BicepValue<string> ContainerName
@@ -62,6 +68,26 @@ public sealed class RadiusContainerConstruct : ProvisionableResource
     }
 
     /// <summary>
+    /// Environment variables for the container, keyed by variable name. Each entry carries
+    /// a <c>value</c> (a literal or a reference to a Bicep parameter for secret values).
+    /// </summary>
+    public BicepDictionary<ContainerEnvVarConstruct> Env
+    {
+        get { Initialize(); return _env!; }
+        set { Initialize(); _env!.Assign(value); }
+    }
+
+    /// <summary>
+    /// Ports exposed by the container, keyed by port name. Each entry carries a
+    /// <c>containerPort</c> and an optional <c>protocol</c>.
+    /// </summary>
+    public BicepDictionary<ContainerPortConstruct> Ports
+    {
+        get { Initialize(); return _ports!; }
+        set { Initialize(); _ports!.Assign(value); }
+    }
+
+    /// <summary>
     /// Initializes a new <see cref="RadiusContainerConstruct"/> with the given Bicep
     /// identifier and Radius container resource name.
     /// </summary>
@@ -99,5 +125,9 @@ public sealed class RadiusContainerConstruct : ProvisionableResource
         // so the control plane can resolve the recipe pack that provisions the container.
         _environmentId = DefineProperty<string>(nameof(EnvironmentId), ["properties", "environment"]);
         _connections = DefineDictionaryProperty<ConnectionConstruct>(nameof(Connections), ["properties", "connections"]);
+        // env and ports live inside the per-container object under `properties.containers.<name>`,
+        // keyed (like image) by the resource name so the map key matches the emitted `name:`.
+        _env = DefineDictionaryProperty<ContainerEnvVarConstruct>(nameof(Env), ["properties", "containers", _containerName, "env"]);
+        _ports = DefineDictionaryProperty<ContainerPortConstruct>(nameof(Ports), ["properties", "containers", _containerName, "ports"]);
     }
 }

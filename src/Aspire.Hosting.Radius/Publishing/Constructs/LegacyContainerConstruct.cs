@@ -1,6 +1,9 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+#pragma warning disable ASPIRERADIUS004 // Experimental: ConfigureRadiusInfrastructure escape-hatch construct types are consumed internally by the publisher.
+
+using System.Diagnostics.CodeAnalysis;
 using Azure.Provisioning;
 using Azure.Provisioning.Primitives;
 
@@ -20,12 +23,15 @@ namespace Aspire.Hosting.Radius.Publishing.Constructs;
 ///   <item><description>parents to <c>Applications.Core/applications</c> (legacy app)</description></item>
 /// </list>
 /// </remarks>
+[Experimental("ASPIRERADIUS004", UrlFormat = "https://aka.ms/aspire/diagnostics/{0}")]
 public sealed class LegacyContainerConstruct : ProvisionableResource
 {
     private BicepValue<string>? _name;
     private BicepValue<string>? _image;
     private BicepValue<string>? _applicationId;
     private BicepDictionary<ConnectionConstruct>? _connections;
+    private BicepDictionary<ContainerEnvVarConstruct>? _env;
+    private BicepDictionary<ContainerPortConstruct>? _ports;
 
     /// <summary>The resource name.</summary>
     public BicepValue<string> ContainerName
@@ -58,6 +64,26 @@ public sealed class LegacyContainerConstruct : ProvisionableResource
         set { Initialize(); _connections!.Assign(value); }
     }
 
+    /// <summary>
+    /// Environment variables for the container, keyed by variable name. Each entry carries
+    /// a <c>value</c> (a literal or a reference to a Bicep parameter for secret values).
+    /// </summary>
+    public BicepDictionary<ContainerEnvVarConstruct> Env
+    {
+        get { Initialize(); return _env!; }
+        set { Initialize(); _env!.Assign(value); }
+    }
+
+    /// <summary>
+    /// Ports exposed by the container, keyed by port name. Each entry carries a
+    /// <c>containerPort</c> and an optional <c>protocol</c>.
+    /// </summary>
+    public BicepDictionary<ContainerPortConstruct> Ports
+    {
+        get { Initialize(); return _ports!; }
+        set { Initialize(); _ports!.Assign(value); }
+    }
+
     /// <summary>Initializes a new <see cref="LegacyContainerConstruct"/> with the given Bicep identifier.</summary>
     public LegacyContainerConstruct(string bicepIdentifier)
         : base(bicepIdentifier, new Azure.Core.ResourceType("Applications.Core/containers"), "2023-10-01-preview")
@@ -71,5 +97,8 @@ public sealed class LegacyContainerConstruct : ProvisionableResource
         _image = DefineProperty<string>(nameof(Image), ["properties", "container", "image"]);
         _applicationId = DefineProperty<string>(nameof(ApplicationId), ["properties", "application"]);
         _connections = DefineDictionaryProperty<ConnectionConstruct>(nameof(Connections), ["properties", "connections"]);
+        // Legacy Applications.Core/containers nests env and ports under the singular `container`.
+        _env = DefineDictionaryProperty<ContainerEnvVarConstruct>(nameof(Env), ["properties", "container", "env"]);
+        _ports = DefineDictionaryProperty<ContainerPortConstruct>(nameof(Ports), ["properties", "container", "ports"]);
     }
 }

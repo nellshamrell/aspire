@@ -54,15 +54,16 @@ public class GroupCycleDetectionTests
     [Fact]
     public void MixedReferenceAndEnvironmentCycle_Throws_ASPIRERADIUS035_AtConfigTime()
     {
-        // Union graph cycle from one reference edge and one environment-target edge:
+        // Union graph cycle from one reference edge and one environment-target edge. group-b owns no
+        // environment (so its cross-group environment target is valid under ASPIRERADIUS036/037); all
+        // of its resources deploy against group-a's environment:
         //   svc-a (group-a) references backing-b (group-b)          → edge a → b
-        //   svc-b (group-b) deploys against group-a's environment   → edge b → a
+        //   group-b resources deploy against group-a's environment  → edge b → a
         var model = BuildModel(b =>
         {
             b.AddRadiusEnvironment("env-a").WithRadiusResourceGroup("group-a");
-            b.AddRadiusEnvironment("env-b").WithRadiusResourceGroup("group-b");
 
-            var backingB = b.AddRedis("backing-b").WithRadiusResourceGroup("group-b");
+            var backingB = b.AddRedis("backing-b").WithRadiusResourceGroup("group-b", environmentGroup: "group-a");
 
             b.AddContainer("svc-a", "img", "latest")
                 .WithReference(backingB)

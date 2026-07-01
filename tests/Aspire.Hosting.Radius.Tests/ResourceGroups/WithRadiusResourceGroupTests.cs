@@ -77,6 +77,52 @@ public class WithRadiusResourceGroupTests
         Assert.Contains("ASPIRERADIUS033", ex.Message);
     }
 
+    [Theory]
+    [InlineData("a/b")]
+    [InlineData("a\\b")]
+    [InlineData("..")]
+    [InlineData(".")]
+    [InlineData("../escape")]
+    [InlineData("foo..bar")]
+    [InlineData(" leading")]
+    [InlineData("trailing ")]
+    [InlineData(".hidden")]
+    [InlineData("trailingdot.")]
+    [InlineData("has\tcontrol")]
+    public void UnsafeGroupName_ThrowsArgumentException_ASPIRERADIUS033(string group)
+    {
+        var builder = DistributedApplication.CreateBuilder();
+        var service = builder.AddContainer("svc", "img", "latest");
+
+        var ex = Assert.Throws<ArgumentException>(() => service.WithRadiusResourceGroup(group));
+        Assert.Contains("ASPIRERADIUS033", ex.Message);
+    }
+
+    [Fact]
+    public void UnsafeEnvironmentGroupName_ThrowsArgumentException_ASPIRERADIUS033()
+    {
+        var builder = DistributedApplication.CreateBuilder();
+        var service = builder.AddContainer("svc", "img", "latest");
+
+        var ex = Assert.Throws<ArgumentException>(() => service.WithRadiusResourceGroup("orders", "../platform"));
+        Assert.Contains("ASPIRERADIUS033", ex.Message);
+    }
+
+    [Theory]
+    [InlineData("platform")]
+    [InlineData("shared-data")]
+    [InlineData("orders_v2")]
+    [InlineData("Group.Name")]
+    public void SafeGroupName_DoesNotThrow(string group)
+    {
+        var builder = DistributedApplication.CreateBuilder();
+        var service = builder.AddContainer("svc", "img", "latest");
+
+        var returned = service.WithRadiusResourceGroup(group);
+
+        Assert.Same(service, returned);
+    }
+
     [Fact]
     public void TwoArg_OnEnvironmentBuilder_ThrowsArgumentException()
     {

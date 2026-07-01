@@ -69,14 +69,19 @@ internal sealed class RadiusGroupOrchestrator
     {
         ArgumentNullException.ThrowIfNull(model);
 
-        var routable = GetRoutableResources(model);
+        var routable = GetRoutableResources(model, out var routingAnnotations);
 
         // Resolve exactly one group per routable resource (ASPIRERADIUS031 / ASPIRERADIUS032).
         var groupOf = new Dictionary<IResource, RadiusResourceGroupReference>();
         var declarationOrder = new List<string>();
         foreach (var resource in routable)
         {
-            var annotations = resource.Annotations.OfType<RadiusResourceGroupAnnotation>().ToList();
+            // Routing annotations may have been placed on a child resource (e.g. a database on its
+            // server); GetRoutableResources accumulates those onto the resolved parent so child-level
+            // WithRadiusResourceGroup(...) is honored rather than silently ignored.
+            var annotations = routingAnnotations.TryGetValue(resource, out var collected)
+                ? collected
+                : [];
             var distinctGroups = annotations.Select(static a => a.Group).Distinct(StringComparer.Ordinal).ToList();
 
             if (distinctGroups.Count == 0)
@@ -129,6 +134,62 @@ internal sealed class RadiusGroupOrchestrator
                     $"Resource '{resource.Name}' deploys against an environment in group " +
                     $"'{reference.EnvironmentGroup}', but no Radius environment is routed to that group. " +
                     "Route an environment there or correct the environment group. Diagnostic: ASPIRERADIUS034.");
+            }
+        }
+
+        // ASPIRERADIUS036 / ASPIRERADIUS037: the emission and deploy model resolves each group to a
+        // single environment and applies it to every resource in the group (RadiusGroupContext carries
+        // one CrossGroupEnvironmentId). Validate that invariant here so violations fail fast with a
+        // clear diagnostic instead of silently emitting resources against the wrong environment
+        // (ASPIRERADIUS036) or dropping them at emission time when nothing resolves (ASPIRERADIUS037).
+        var membersByGroup = groupOf
+            .Where(static kv => kv.Key is not RadiusEnvironmentResource)
+            .GroupBy(static kv => kv.Value.Group, StringComparer.Ordinal);
+
+        foreach (var members in membersByGroup)
+        {
+            var group = members.Key;
+            var groupOwnsEnvironment = environmentGroups.Contains(group);
+
+            // The environment groups the group's resources ask to deploy against. A group that owns an
+            // environment always deploys against its own (bare, in-group) environment, so any member
+            // requesting a *different* environment group is a conflict.
+            var distinctEnvironmentGroups = members
+                .Select(static kv => kv.Value.EnvironmentGroup)
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
+
+            if (groupOwnsEnvironment)
+            {
+                var conflicting = distinctEnvironmentGroups
+                    .Where(e => !string.Equals(e, group, StringComparison.Ordinal))
+                    .ToList();
+                if (conflicting.Count > 0)
+                {
+                    throw new InvalidOperationException(
+                        $"Resources in Radius resource group '{group}' resolve to more than one environment: " +
+                        $"the group owns an environment (deploying in-group), but one or more resources target a " +
+                        $"different environment group ({string.Join(", ", conflicting)}). All resources in a group " +
+                        "must deploy against a single environment. Diagnostic: ASPIRERADIUS036.");
+                }
+            }
+            else if (distinctEnvironmentGroups.Count > 1)
+            {
+                throw new InvalidOperationException(
+                    $"Resources in Radius resource group '{group}' resolve to more than one environment group " +
+                    $"({string.Join(", ", distinctEnvironmentGroups)}). All resources in a group must deploy against " +
+                    "a single environment. Diagnostic: ASPIRERADIUS036.");
+            }
+
+            // The environment group this group actually resolves against: its own when it owns an
+            // environment, otherwise the (now single) environment group its resources agreed on.
+            var resolvedEnvironmentGroup = groupOwnsEnvironment ? group : distinctEnvironmentGroups[0];
+            if (!environmentGroups.Contains(resolvedEnvironmentGroup))
+            {
+                throw new InvalidOperationException(
+                    $"Radius resource group '{group}' carries resources but resolves to no Radius environment " +
+                    $"(neither the group nor its environment group '{resolvedEnvironmentGroup}' owns one). Route a " +
+                    "Radius environment into the group, or target a group that owns one. Diagnostic: ASPIRERADIUS037.");
             }
         }
 
@@ -231,17 +292,24 @@ internal sealed class RadiusGroupOrchestrator
     /// plus any resource explicitly routed via <c>WithRadiusResourceGroup</c>. Child resources
     /// are resolved to their parent and de-duplicated by name.
     /// </summary>
-    private static IReadOnlyList<IResource> GetRoutableResources(DistributedApplicationModel model)
+    private static IReadOnlyList<IResource> GetRoutableResources(
+        DistributedApplicationModel model,
+        out Dictionary<IResource, List<RadiusResourceGroupAnnotation>> routingAnnotations)
     {
         var seen = new HashSet<string>(StringComparer.Ordinal);
         var routable = new List<IResource>();
+        routingAnnotations = new Dictionary<IResource, List<RadiusResourceGroupAnnotation>>();
 
         foreach (var resource in model.Resources)
         {
             var resolved = resource is IResourceWithParent child ? child.Parent : resource;
 
-            var isExplicitlyRouted = resolved.Annotations.OfType<RadiusResourceGroupAnnotation>().Any();
-            if (!IsRoutable(resolved) && !isExplicitlyRouted)
+            // WithRadiusResourceGroup annotates the resource it is called on, which may be a child
+            // (e.g. a database on its server). A child's routing applies to the resolved parent, so
+            // read the *original* resource's annotations here (not just the parent's) and treat a
+            // child-declared route as explicit routing that pulls the parent into the model.
+            var annotations = resource.Annotations.OfType<RadiusResourceGroupAnnotation>().ToList();
+            if (!IsRoutable(resolved) && annotations.Count == 0)
             {
                 continue;
             }
@@ -249,6 +317,21 @@ internal sealed class RadiusGroupOrchestrator
             if (seen.Add(resolved.Name))
             {
                 routable.Add(resolved);
+            }
+
+            // Accumulate every routing annotation (from the parent itself and from any of its
+            // children) onto the resolved parent. Keeping them all — rather than last-write-wins —
+            // preserves ASPIRERADIUS032 ambiguity detection when a child and parent (or two children)
+            // disagree on the group.
+            if (annotations.Count > 0)
+            {
+                if (!routingAnnotations.TryGetValue(resolved, out var list))
+                {
+                    list = new List<RadiusResourceGroupAnnotation>();
+                    routingAnnotations[resolved] = list;
+                }
+
+                list.AddRange(annotations);
             }
         }
 

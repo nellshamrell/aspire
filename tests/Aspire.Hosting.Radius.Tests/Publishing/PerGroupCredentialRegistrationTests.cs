@@ -2,12 +2,15 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 #pragma warning disable ASPIRERADIUS005 // Experimental: WithRadiusResourceGroup is under test.
+#pragma warning disable ASPIREPIPELINES001
 
 using Aspire.Hosting.ApplicationModel;
+using Aspire.Hosting.Pipelines;
 using Aspire.Hosting.Radius.Annotations;
 using Aspire.Hosting.Radius.Publishing;
 using Aspire.Hosting.Utils;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Aspire.Hosting.Radius.Tests.Publishing;
 
@@ -79,6 +82,85 @@ public class PerGroupCredentialRegistrationTests
             Assert.DoesNotContain(AwsKeySecret, bicep);
             Assert.DoesNotContain(AwsKeyId, bicep);
         }
+    }
+
+    [Fact]
+    public async Task GroupedMode_PrimaryDeployDependsOnEveryCredentialRegistrationStep()
+    {
+        using var builder = TestDistributedApplicationBuilder.Create(DistributedApplicationOperation.Publish);
+
+        var azureSecret = builder.AddParameter("azureClientSecret", AzureSecret, secret: true);
+        builder.AddRadiusEnvironment("env-web")
+            .WithRadiusResourceGroup("web")
+            .WithAzureProvider(WebSub, WebRg, azure => azure.WithServicePrincipal(AzureTenant, AzureClient, azureSecret));
+        builder.AddContainer("webapi", "img", "latest").WithRadiusResourceGroup("web");
+
+        var awsKeyId = builder.AddParameter("awsKeyId", AwsKeyId, secret: true);
+        var awsKeySecret = builder.AddParameter("awsKeySecret", AwsKeySecret, secret: true);
+        builder.AddRadiusEnvironment("env-data")
+            .WithRadiusResourceGroup("data")
+            .WithAwsProvider(DataAccount, DataRegion, aws => aws.WithAccessKey(awsKeyId, awsKeySecret));
+        builder.AddContainer("dataapi", "img", "latest").WithRadiusResourceGroup("data");
+
+        using var app = builder.Build();
+        var model = app.Services.GetRequiredService<DistributedApplicationModel>();
+        var pipelineContext = new PipelineContext(
+            model,
+            app.Services.GetRequiredService<DistributedApplicationExecutionContext>(),
+            app.Services,
+            NullLogger.Instance,
+            CancellationToken.None);
+        var steps = new List<PipelineStep>();
+        foreach (var resource in model.Resources)
+        {
+            foreach (var annotation in resource.Annotations.OfType<PipelineStepAnnotation>())
+            {
+                var annotationSteps = await annotation.CreateStepsAsync(new PipelineStepFactoryContext
+                {
+                    PipelineContext = pipelineContext,
+                    Resource = resource,
+                });
+
+                foreach (var step in annotationSteps)
+                {
+                    step.Resource ??= resource;
+                    steps.Add(step);
+                }
+            }
+        }
+
+        var configurationContext = new PipelineConfigurationContext
+        {
+            Model = model,
+            Services = app.Services,
+            Steps = steps,
+        };
+        foreach (var annotation in model.Resources.SelectMany(static r => r.Annotations.OfType<PipelineConfigurationAnnotation>()))
+        {
+            await annotation.Callback(configurationContext);
+        }
+
+        var stepsByName = steps.ToDictionary(static s => s.Name, StringComparer.Ordinal);
+        foreach (var step in steps)
+        {
+            foreach (var requiredByStepName in step.RequiredBySteps)
+            {
+                if (!stepsByName.TryGetValue(requiredByStepName, out var requiredByStep))
+                {
+                    continue;
+                }
+
+                if (!requiredByStep.DependsOnSteps.Contains(step.Name))
+                {
+                    requiredByStep.DependsOnSteps.Add(step.Name);
+                }
+            }
+        }
+
+        var primaryDeploy = steps.Single(s => s.Name == "deploy-radius-env-web");
+
+        Assert.Contains("register-radius-credentials-env-web", primaryDeploy.DependsOnSteps);
+        Assert.Contains("register-radius-credentials-env-data", primaryDeploy.DependsOnSteps);
     }
 
     private static async Task<(IReadOnlyList<string> Args, IReadOnlyList<string> Secrets)> ResolveAsync(IResource resource)

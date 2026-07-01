@@ -100,4 +100,95 @@ public class GroupValidationTests
             },
             RadiusGroupValidation.Validate); // no throw
     }
+
+    [Fact]
+    public void MixedEnvironmentGroupsInGroupWithoutEnvironment_Throws_ASPIRERADIUS036()
+    {
+        WithModel(
+            b =>
+            {
+                b.AddRadiusEnvironment("radius").WithRadiusResourceGroup("platform");
+                b.AddRadiusEnvironment("radius2").WithRadiusResourceGroup("data");
+                // Two resources in 'orders' (which owns no environment) target different environment
+                // groups — the group cannot resolve to a single environment.
+                b.AddContainer("api", "img", "latest").WithRadiusResourceGroup("orders", "platform");
+                b.AddContainer("worker", "img", "latest").WithRadiusResourceGroup("orders", "data");
+            },
+            model =>
+            {
+                var ex = Assert.Throws<InvalidOperationException>(() => RadiusGroupValidation.Validate(model));
+                Assert.Contains("ASPIRERADIUS036", ex.Message);
+                Assert.Contains("orders", ex.Message);
+            });
+    }
+
+    [Fact]
+    public void MemberTargetsDifferentEnvironmentThanOwnedByGroup_Throws_ASPIRERADIUS036()
+    {
+        WithModel(
+            b =>
+            {
+                // 'platform' owns an environment (so it deploys in-group), but a resource routed to
+                // 'platform' asks to deploy against 'data' — a conflict.
+                b.AddRadiusEnvironment("radius").WithRadiusResourceGroup("platform");
+                b.AddRadiusEnvironment("radius2").WithRadiusResourceGroup("data");
+                b.AddContainer("api", "img", "latest").WithRadiusResourceGroup("platform", "data");
+            },
+            model =>
+            {
+                var ex = Assert.Throws<InvalidOperationException>(() => RadiusGroupValidation.Validate(model));
+                Assert.Contains("ASPIRERADIUS036", ex.Message);
+                Assert.Contains("platform", ex.Message);
+            });
+    }
+
+    [Fact]
+    public void GroupWithResourcesButNoResolvableEnvironment_Throws_ASPIRERADIUS037()
+    {
+        WithModel(
+            b =>
+            {
+                b.AddRadiusEnvironment("radius").WithRadiusResourceGroup("platform");
+                // 'orders' owns no environment and its resource targets its own group (the default),
+                // so nothing resolves to an environment.
+                b.AddContainer("api", "img", "latest").WithRadiusResourceGroup("orders");
+            },
+            model =>
+            {
+                var ex = Assert.Throws<InvalidOperationException>(() => RadiusGroupValidation.Validate(model));
+                Assert.Contains("ASPIRERADIUS037", ex.Message);
+                Assert.Contains("orders", ex.Message);
+            });
+    }
+
+    [Fact]
+    public void CrossGroupEnvironmentTarget_DoesNotThrow()
+    {
+        WithModel(
+            b =>
+            {
+                b.AddRadiusEnvironment("radius").WithRadiusResourceGroup("platform");
+                b.AddContainer("api", "img", "latest").WithRadiusResourceGroup("orders", "platform");
+            },
+            RadiusGroupValidation.Validate); // no throw
+    }
+
+    [Fact]
+    public void RoutingAnnotationOnChildResource_RoutesResolvedParent()
+    {
+        WithModel(
+            b =>
+            {
+                b.AddRadiusEnvironment("radius").WithRadiusResourceGroup("platform");
+                // The routing annotation is placed on the database child; it must apply to the
+                // resolved parent (the SQL server) rather than being silently ignored.
+                b.AddSqlServer("sqlserver").AddDatabase("sqldb").WithRadiusResourceGroup("platform");
+            },
+            model =>
+            {
+                var orchestrator = RadiusGroupOrchestrator.Create(model); // no orphan throw
+                Assert.True(orchestrator.ReferenceByResourceName.TryGetValue("sqlserver", out var reference));
+                Assert.Equal("platform", reference!.Group);
+            });
+    }
 }

@@ -340,12 +340,24 @@ internal sealed class RadiusInfrastructureBuilder
             var legacyAppIdentifier = (hasUdtResources || computeForcesUdtChain)
                 ? appIdentifier + "_legacy" : appIdentifier;
 
-            legacyEnvConstruct = CreateLegacyEnvironmentConstruct(
-                legacyEnvIdentifier, legacyRecipeEntries);
-            options.LegacyEnvironments.Add(legacyEnvConstruct);
+            if (isCrossGroupEnvironment)
+            {
+                // FR-005: the target environment is owned by another group, so this group must
+                // not declare a local legacy environment. Legacy applications still deploy by
+                // referencing that cross-group environment's full UCP ID.
+                legacyAppConstruct = CreateLegacyApplicationConstruct(
+                    legacyAppIdentifier, appIdentifier, ResolveEnvironmentId(null));
+            }
+            else
+            {
+                legacyEnvConstruct = CreateLegacyEnvironmentConstruct(
+                    legacyEnvIdentifier, legacyRecipeEntries);
+                options.LegacyEnvironments.Add(legacyEnvConstruct);
 
-            legacyAppConstruct = CreateLegacyApplicationConstruct(
-                legacyAppIdentifier, appIdentifier, legacyEnvConstruct);
+                legacyAppConstruct = CreateLegacyApplicationConstruct(
+                    legacyAppIdentifier, appIdentifier, BuildIdExpression(legacyEnvConstruct));
+            }
+
             options.LegacyApplications.Add(legacyAppConstruct);
         }
 
@@ -380,10 +392,10 @@ internal sealed class RadiusInfrastructureBuilder
                 ? resource.Name
                 : null;
 
-            // In the cross-group environment path there is no local UDT environment construct
-            // (the environment lives in another group); the instance's environment is the
-            // cross-group UCP ID resolved by CreateResourceTypeConstruct, so parentEnv is null.
-            ProvisionableResource? parentEnv = isLegacy ? legacyEnvConstruct! : envConstruct;
+            // In the cross-group environment path there is no local UDT or legacy environment
+            // construct (the environment lives in another group); the instance's environment is
+            // the cross-group UCP ID resolved by CreateResourceTypeConstruct, so parentEnv is null.
+            ProvisionableResource? parentEnv = isLegacy ? legacyEnvConstruct : envConstruct;
             ProvisionableResource parentApp = isLegacy ? legacyAppConstruct! : appConstruct!;
 
             var typeInstance = CreateResourceTypeConstruct(
@@ -1587,13 +1599,13 @@ internal sealed class RadiusInfrastructureBuilder
 
     private static LegacyApplicationConstruct CreateLegacyApplicationConstruct(
         string identifier, string applicationName,
-        LegacyApplicationEnvironmentConstruct legacyEnvConstruct)
+        BicepValue<string> environmentId)
     {
         var construct = new LegacyApplicationConstruct(identifier);
         // Share the UDT application's `name:` — rubber-duck feedback: only the
         // Bicep identifier is suffixed with `_legacy`.
         construct.ApplicationName = applicationName;
-        construct.EnvironmentId = BuildIdExpression(legacyEnvConstruct);
+        construct.EnvironmentId = environmentId;
         return construct;
     }
 

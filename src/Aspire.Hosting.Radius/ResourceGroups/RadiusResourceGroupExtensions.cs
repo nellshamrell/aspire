@@ -88,11 +88,52 @@ public static class RadiusResourceGroupExtensions
 
     private static void ValidateGroupName(string group, string paramName)
     {
+        // A group name is used verbatim both as a filesystem path segment (the per-group
+        // `groups/<group>/` artifact directory) and as a segment of the Radius UCP resource ID
+        // (`/planes/radius/local/resourceGroups/<group>/...`). It must therefore be a single, safe
+        // path segment: rejecting separators, relative-path tokens, and control characters prevents
+        // a name like `../foo` or `a/b` from escaping the artifact layout or producing a malformed
+        // UCP ID. Diagnostic: ASPIRERADIUS033.
         if (string.IsNullOrWhiteSpace(group))
         {
             throw new ArgumentException(
-                $"A Radius resource-group name must be non-empty and non-whitespace. Diagnostic: ASPIRERADIUS033.",
+                "A Radius resource-group name must be non-empty and non-whitespace. Diagnostic: ASPIRERADIUS033.",
                 paramName);
         }
+
+        if (!IsSafeGroupNameSegment(group))
+        {
+            throw new ArgumentException(
+                $"The Radius resource-group name '{group}' is invalid: it must be a single path segment and " +
+                "may not contain path separators ('/' or '\\'), the relative-path token '..', leading or " +
+                "trailing whitespace or dots, or control characters. Diagnostic: ASPIRERADIUS033.",
+                paramName);
+        }
+    }
+
+    private static bool IsSafeGroupNameSegment(string group)
+    {
+        // Reject leading/trailing whitespace or dots (e.g. ' foo', 'foo.', '.') so the name can't
+        // resolve to a surprising directory or an empty/relative path segment on any platform.
+        if (group[0] is ' ' or '.' || group[^1] is ' ' or '.')
+        {
+            return false;
+        }
+
+        if (group is "." or "..")
+        {
+            return false;
+        }
+
+        foreach (var c in group)
+        {
+            if (c is '/' or '\\' || char.IsControl(c))
+            {
+                return false;
+            }
+        }
+
+        // Guard against any embedded relative-path token regardless of surrounding characters.
+        return !group.Contains("..", StringComparison.Ordinal);
     }
 }

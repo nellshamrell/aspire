@@ -9,6 +9,7 @@
 using System.Diagnostics;
 using Aspire.Hosting.ApplicationModel;
 using Aspire.Hosting.Pipelines;
+using Aspire.Hosting.Radius.Annotations;
 using Aspire.Hosting.Radius.ResourceGroups;
 using Aspire.Hosting.Radius.ResourceMapping;
 using Aspire.Hosting.Utils;
@@ -43,6 +44,8 @@ internal sealed class RadiusDeploymentPipelineStep
     /// </summary>
     internal PipelineStep CreatePipelineStep()
     {
+        EnsureGroupedCredentialDependencyConfigurationRegistered();
+
         var step = new PipelineStep
         {
             Name = $"deploy-radius-{_environment.Name}",
@@ -53,6 +56,54 @@ internal sealed class RadiusDeploymentPipelineStep
         step.RequiredBy(WellKnownPipelineSteps.Deploy);
         step.DependsOn(WellKnownPipelineSteps.DeployPrereq);
         return step;
+    }
+
+    private void EnsureGroupedCredentialDependencyConfigurationRegistered()
+    {
+        if (_environment.Annotations.OfType<GroupedCredentialDependencyConfigurationAnnotation>().Any())
+        {
+            return;
+        }
+
+        _environment.Annotations.Add(new GroupedCredentialDependencyConfigurationAnnotation());
+        _environment.Annotations.Add(new PipelineConfigurationAnnotation(WireGroupedCredentialDependencies));
+    }
+
+    private static void WireGroupedCredentialDependencies(PipelineConfigurationContext context)
+    {
+        var model = context.Model;
+        if (!RadiusGroupOrchestrator.IsRoutingActive(model))
+        {
+            return;
+        }
+
+        var primaryEnvironment = model.Resources.OfType<RadiusEnvironmentResource>().FirstOrDefault();
+        if (primaryEnvironment is null)
+        {
+            return;
+        }
+
+        var primaryDeployStep = context.Steps.SingleOrDefault(s => s.Name == $"deploy-radius-{primaryEnvironment.Name}");
+        if (primaryDeployStep is null)
+        {
+            return;
+        }
+
+        var credentialStepNames = model.Resources
+            .OfType<RadiusEnvironmentResource>()
+            .Where(static env => env.Annotations.OfType<RadiusCloudProvidersAnnotation>().Any())
+            .Select(static env => $"register-radius-credentials-{env.Name}")
+            .ToHashSet(StringComparer.Ordinal);
+
+        foreach (var credentialStepName in context.Steps.Select(static s => s.Name).Where(credentialStepNames.Contains))
+        {
+            // In grouped mode the primary emitter owns every group's deploy, so it must wait
+            // for every environment's Radius installation-global credential registration.
+            if (!primaryDeployStep.DependsOnSteps.Contains(credentialStepName))
+            {
+                primaryDeployStep.DependsOn(credentialStepName);
+            }
+        }
     }
 
     internal async Task ExecuteAsync(PipelineStepContext context)
@@ -590,4 +641,6 @@ internal sealed class RadiusDeploymentPipelineStep
             return false;
         }
     }
+
+    private sealed class GroupedCredentialDependencyConfigurationAnnotation : IResourceAnnotation;
 }

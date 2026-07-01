@@ -47,6 +47,36 @@ public class CrossGroupEnvironmentBicepTests
     }
 
     [Fact]
+    public void CrossGroupEnvironment_WithLegacyResource_EmitsFullUcpId_WithoutLocalLegacyEnvironment()
+    {
+        using var builder = TestDistributedApplicationBuilder.Create(DistributedApplicationOperation.Publish);
+
+        // platform owns the environment (and a resource so the environment is materialized).
+        builder.AddRadiusEnvironment("env-platform").WithRadiusResourceGroup("platform");
+        builder.AddRedis("platformcache").WithRadiusResourceGroup("platform");
+
+        // orders owns no environment; its legacy Redis resource deploys against platform's environment.
+        builder.AddRedis("orderscache").WithRadiusResourceGroup("orders", environmentGroup: "platform");
+
+        using var app = builder.Build();
+        var model = app.Services.GetRequiredService<DistributedApplicationModel>();
+
+        var ordersBicep = RadiusBicepPublishingContext.GenerateGroupedBicep(model)["orders"];
+        var expectedEnvironment = "environment: '/planes/radius/local/resourceGroups/platform/providers/Applications.Core/environments/env-platform'";
+
+        Assert.Contains("Applications.Core/applications@", ordersBicep);
+        var legacyApplicationIndex = ordersBicep.IndexOf("resource app 'Applications.Core/applications@", StringComparison.Ordinal);
+        Assert.True(legacyApplicationIndex >= 0, $"Expected a legacy application. Bicep:{Environment.NewLine}{ordersBicep}");
+        var nextResourceIndex = ordersBicep.IndexOf("\nresource ", legacyApplicationIndex + 1, StringComparison.Ordinal);
+        var legacyApplicationEnvironmentIndex = ordersBicep.IndexOf(expectedEnvironment, legacyApplicationIndex, StringComparison.Ordinal);
+        Assert.True(
+            legacyApplicationEnvironmentIndex > legacyApplicationIndex &&
+            legacyApplicationEnvironmentIndex < nextResourceIndex,
+            $"Expected the legacy application to reference the cross-group environment. Bicep:{Environment.NewLine}{ordersBicep}");
+        Assert.DoesNotContain("Applications.Core/environments@", ordersBicep);
+    }
+
+    [Fact]
     public void InGroupEnvironment_KeepsBareReference()
     {
         using var builder = TestDistributedApplicationBuilder.Create(DistributedApplicationOperation.Publish);

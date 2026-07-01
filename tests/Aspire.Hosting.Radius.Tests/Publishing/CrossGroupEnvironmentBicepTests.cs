@@ -61,7 +61,11 @@ public class CrossGroupEnvironmentBicepTests
         using var app = builder.Build();
         var model = app.Services.GetRequiredService<DistributedApplicationModel>();
 
-        var ordersBicep = RadiusBicepPublishingContext.GenerateGroupedBicep(model)["orders"];
+        IReadOnlyDictionary<string, string>? bicepByGroup = null;
+        var exception = Record.Exception(() => bicepByGroup = RadiusBicepPublishingContext.GenerateGroupedBicep(model));
+        Assert.Null(exception);
+
+        var ordersBicep = bicepByGroup!["orders"];
         var expectedEnvironment = "environment: '/planes/radius/local/resourceGroups/platform/providers/Applications.Core/environments/env-platform'";
 
         Assert.Contains("Applications.Core/applications@", ordersBicep);
@@ -74,6 +78,33 @@ public class CrossGroupEnvironmentBicepTests
             legacyApplicationEnvironmentIndex < nextResourceIndex,
             $"Expected the legacy application to reference the cross-group environment. Bicep:{Environment.NewLine}{ordersBicep}");
         Assert.DoesNotContain("Applications.Core/environments@", ordersBicep);
+    }
+
+    [Fact]
+    public void CrossGroupEnvironment_WithCustomLegacyRecipe_ThrowsDiagnostic()
+    {
+        using var builder = TestDistributedApplicationBuilder.Create(DistributedApplicationOperation.Publish);
+
+        builder.AddRadiusEnvironment("env-platform").WithRadiusResourceGroup("platform");
+        builder.AddRedis("platformcache").WithRadiusResourceGroup("platform");
+
+        builder.AddRedis("orderscache")
+            .PublishAsRadiusResource(c =>
+            {
+                c.Recipe = new RadiusRecipe
+                {
+                    Name = "orders-redis",
+                    RecipeLocation = "ghcr.io/myorg/recipes/redis:1.0"
+                };
+            })
+            .WithRadiusResourceGroup("orders", environmentGroup: "platform");
+
+        using var app = builder.Build();
+        var model = app.Services.GetRequiredService<DistributedApplicationModel>();
+
+        var ex = Assert.Throws<InvalidOperationException>(() => RadiusBicepPublishingContext.GenerateGroupedBicep(model));
+
+        Assert.Contains("ASPIRERADIUS039", ex.Message);
     }
 
     [Fact]

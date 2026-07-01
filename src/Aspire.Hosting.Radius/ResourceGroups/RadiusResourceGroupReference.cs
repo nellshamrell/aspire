@@ -1,6 +1,8 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+using System.Diagnostics.CodeAnalysis;
+
 namespace Aspire.Hosting.Radius.ResourceGroups;
 
 /// <summary>
@@ -62,5 +64,72 @@ internal sealed record RadiusResourceGroupReference
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
 
         return $"/planes/radius/local/resourceGroups/{group}/providers/{resourceType}/{name}";
+    }
+
+    /// <summary>
+    /// The maximum length of a Radius resource-group name, matching the UCP/Azure
+    /// Resource Manager resource-group limit.
+    /// </summary>
+    internal const int MaxNameLength = 90;
+
+    // Windows reserved device names. A resource-group name is used verbatim as a
+    // `groups/<group>/` artifact directory, so a name like `CON` or `NUL` (with or
+    // without an extension, e.g. `CON.bicep`) cannot be materialized on Windows even
+    // though Radius/UCP itself would accept it. Matching is case-insensitive.
+    private static readonly HashSet<string> s_reservedDeviceNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "CON", "PRN", "AUX", "NUL",
+        "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    };
+
+    /// <summary>
+    /// Validates that <paramref name="name"/> is a safe Radius resource-group name.
+    /// This is the single source of truth for group-name validation and is called
+    /// from both the public <c>WithRadiusResourceGroup</c> overloads and the
+    /// orchestrator, so routing set through internal annotations cannot bypass it.
+    /// </summary>
+    /// <remarks>
+    /// A group name is used verbatim both as a filesystem path segment (the per-group
+    /// <c>groups/&lt;group&gt;/</c> artifact directory) and as a segment of the Radius
+    /// UCP resource ID (<c>/planes/radius/local/resourceGroups/&lt;group&gt;/...</c>).
+    /// The allowed grammar mirrors UCP/Azure Resource Manager resource-group names:
+    /// 1-90 characters of ASCII letters, digits, <c>-</c>, <c>_</c>, and <c>.</c>, not
+    /// starting or ending with <c>.</c>, and with no consecutive <c>.</c>. This is not
+    /// stricter than what Radius accepts, except that Windows reserved device names are
+    /// additionally rejected so the artifact directory can be created on every platform.
+    /// </remarks>
+    internal static bool IsValidName([NotNullWhen(true)] string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name) || name.Length > MaxNameLength)
+        {
+            return false;
+        }
+
+        // "." and ".." are relative-path tokens; a leading/trailing '.' is also disallowed
+        // by ARM/UCP and would produce a surprising directory segment.
+        if (name is "." or ".." || name[0] == '.' || name[^1] == '.')
+        {
+            return false;
+        }
+
+        if (name.Contains("..", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        foreach (var c in name)
+        {
+            if (!(char.IsAsciiLetterOrDigit(c) || c is '-' or '_' or '.'))
+            {
+                return false;
+            }
+        }
+
+        // A reserved device name is reserved regardless of any extension, so compare the
+        // base name before the first '.' (e.g. `CON.bicep` -> `CON`).
+        var dotIndex = name.IndexOf('.', StringComparison.Ordinal);
+        var baseName = dotIndex < 0 ? name : name[..dotIndex];
+        return !s_reservedDeviceNames.Contains(baseName);
     }
 }

@@ -60,10 +60,13 @@ internal sealed class RadiusGroupOrchestrator
     /// per-group partitions and deploy order. Throws on invalid routing.
     /// </summary>
     /// <exception cref="InvalidOperationException">
-    /// A resource is orphaned (<c>ASPIRERADIUS031</c>) or ambiguously assigned
-    /// (<c>ASPIRERADIUS032</c>), a cross-group environment target is unresolvable
-    /// (<c>ASPIRERADIUS034</c>), or the group dependency graph contains a cycle
-    /// (<c>ASPIRERADIUS035</c>).
+    /// A resource is orphaned (<c>ASPIRERADIUS031</c>) or ambiguously assigned to more than
+    /// one group or environment group (<c>ASPIRERADIUS032</c>), a routed group name is invalid
+    /// (<c>ASPIRERADIUS033</c>), a cross-group environment target is unresolvable
+    /// (<c>ASPIRERADIUS034</c>), the group dependency graph contains a cycle
+    /// (<c>ASPIRERADIUS035</c>), a group resolves to more than one environment
+    /// (<c>ASPIRERADIUS036</c>) or to none (<c>ASPIRERADIUS037</c>), or two group names differ
+    /// only by case (<c>ASPIRERADIUS038</c>).
     /// </exception>
     internal static RadiusGroupOrchestrator Create(DistributedApplicationModel model)
     {
@@ -99,7 +102,37 @@ internal sealed class RadiusGroupOrchestrator
                     "Diagnostic: ASPIRERADIUS032.");
             }
 
+            // Routing declared on a child and its parent can agree on the group yet disagree on the
+            // environment group (e.g. WithRadiusResourceGroup("a") on the parent and ("a","b") on the
+            // child). annotations[^1] would silently pick the last one in model order, so surface the
+            // conflict instead of resolving it order-dependently.
+            var distinctEnvironmentGroups = annotations
+                .Select(static a => a.EffectiveEnvironmentGroup)
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
+            if (distinctEnvironmentGroups.Count > 1)
+            {
+                throw new InvalidOperationException(
+                    $"Resource '{resource.Name}' is ambiguously assigned to a single Radius resource group " +
+                    $"('{distinctGroups[0]}') but to more than one environment group " +
+                    $"({string.Join(", ", distinctEnvironmentGroups)}); a route declared on a child resource " +
+                    "applies to its parent, so a parent/child (or child/child) environment-group disagreement " +
+                    "trips this. A resource must resolve to exactly one environment. Diagnostic: ASPIRERADIUS032.");
+            }
+
             var annotation = annotations[^1];
+
+            // Defence in depth: RadiusResourceGroupAnnotation stores names unvalidated, so routing set
+            // through the annotation directly (bypassing the public overloads) is validated here too.
+            if (!RadiusResourceGroupReference.IsValidName(annotation.Group))
+            {
+                throw new InvalidOperationException(BuildInvalidNameMessage(resource.Name, annotation.Group));
+            }
+            if (!RadiusResourceGroupReference.IsValidName(annotation.EffectiveEnvironmentGroup))
+            {
+                throw new InvalidOperationException(BuildInvalidNameMessage(resource.Name, annotation.EffectiveEnvironmentGroup));
+            }
+
             var reference = new RadiusResourceGroupReference(annotation.Group, annotation.EnvironmentGroup);
             groupOf[resource] = reference;
 
@@ -111,6 +144,25 @@ internal sealed class RadiusGroupOrchestrator
             {
                 declarationOrder.Add(reference.EnvironmentGroup);
             }
+        }
+
+        // Radius resource-group names are case-insensitive, so two names that differ only by case
+        // (e.g. "shared" and "Shared") collide server-side while our internal routing keeps them
+        // ordinal-distinct — they would map to the same UCP resource group with unpredictable
+        // results. Reject the collision up front. declarationOrder already holds every distinct
+        // group and environment-group name in first-seen order.
+        var seenByCaseInsensitiveName = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var name in declarationOrder)
+        {
+            if (seenByCaseInsensitiveName.TryGetValue(name, out var existing)
+                && !string.Equals(existing, name, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    $"Radius resource-group names '{existing}' and '{name}' differ only by case. Radius " +
+                    "resource-group names are case-insensitive, so these would collide. Use a single " +
+                    "consistent spelling. Diagnostic: ASPIRERADIUS038.");
+            }
+            seenByCaseInsensitiveName[name] = name;
         }
 
         // Groups that own at least one environment.
@@ -215,6 +267,15 @@ internal sealed class RadiusGroupOrchestrator
 
         return new RadiusGroupOrchestrator(partitions, deployOrder, referenceByResourceName);
     }
+
+    // Shared message for a routed group/environment-group name that fails validation when read
+    // back from an annotation (the public overloads reject the same names at the call site with
+    // an ArgumentException). Diagnostic: ASPIRERADIUS033.
+    private static string BuildInvalidNameMessage(string resourceName, string groupName) =>
+        $"Resource '{resourceName}' is routed to the invalid Radius resource-group name '{groupName}'. " +
+        $"A group name must be 1-{RadiusResourceGroupReference.MaxNameLength} characters of ASCII letters, " +
+        "digits, '-', '_', or '.', may not start or end with '.', may not contain '..', and may not be a " +
+        "reserved device name (e.g. CON, NUL). Diagnostic: ASPIRERADIUS033.";
 
     /// <summary>
     /// Builds one partition per group that carries at least one routed resource, preserving

@@ -145,6 +145,8 @@ internal sealed class RadiusInfrastructureBuilder
         var recipePackIdentifier = "recipepack";
         var udtRecipeEntries = new Dictionary<string, RecipeEntry>(StringComparer.Ordinal);
         var legacyRecipeEntries = new Dictionary<string, Dictionary<string, RecipeEntry>>(StringComparer.Ordinal);
+        string? customLegacyRecipeResourceName = null;
+        string? customLegacyRecipeResourceType = null;
         var typeInstancesByResourceName = new Dictionary<string, RadiusResourceTypeConstruct>(StringComparer.Ordinal);
 
         // Radius binds one recipe per resource type per environment. Legacy Applications.* types
@@ -245,11 +247,24 @@ internal sealed class RadiusInfrastructureBuilder
                 // doesn't collapse onto the shared "default" recipe (FR-007, INV-5). A recipe
                 // that already carries an explicit Name keeps it, so distinct named recipes for
                 // the same legacy type still register side by side.
-                var bindPerInstance = NormalizeRecipeLocation(effectiveRecipe?.RecipeLocation) is not null
+                var effectiveRecipeHasLocation = effectiveRecipe?.RecipeLocation is not null;
+                var managedRecipeHasLocation = managedRecipe?.RecipeLocation is not null;
+                var effectiveRecipeLocation = NormalizeRecipeLocation(effectiveRecipe?.RecipeLocation);
+                var bindPerInstance = effectiveRecipeLocation is not null
                     && IsDivergentType(resourceType);
                 var recipeNameOverride = bindPerInstance && string.IsNullOrEmpty(effectiveRecipe?.Name)
                     ? resource.Name
                     : null;
+                if (customLegacyRecipeResourceName is null &&
+                    (effectiveRecipeHasLocation ||
+                     !string.IsNullOrEmpty(effectiveRecipe?.Name) ||
+                     !string.IsNullOrEmpty(recipeNameOverride) ||
+                     managedRecipeHasLocation))
+                {
+                    customLegacyRecipeResourceName = resource.Name;
+                    customLegacyRecipeResourceType = resourceType;
+                }
+
                 AddLegacyRecipeEntry(legacyRecipeEntries, resourceType, effectiveRecipe, recipeNameOverride);
             }
             else
@@ -291,6 +306,18 @@ internal sealed class RadiusInfrastructureBuilder
         // environment's full UCP ID instead (FR-005); only the single logical application chain
         // for this group's resources is emitted here.
         var isCrossGroupEnvironment = _groupContext?.CrossGroupEnvironmentId is not null;
+        if (isCrossGroupEnvironment && customLegacyRecipeResourceName is not null)
+        {
+            // Legacy recipes are registered on the Applications.Core environment. In cross-group
+            // mode that environment is owned and emitted by another group, so registering a local
+            // custom legacy recipe here would silently disappear.
+            throw new InvalidOperationException(
+                $"Legacy resource '{customLegacyRecipeResourceName}' (Radius type '{customLegacyRecipeResourceType}') " +
+                $"in group '{_groupContext!.Group}' declares a custom recipe, but the group deploys against an " +
+                "environment owned by another group. Custom legacy recipes cannot be registered locally in a " +
+                "cross-group environment; register the recipe on the environment-owning group instead. " +
+                "Diagnostic: ASPIRERADIUS039.");
+        }
 
         if (hasUdtResources || computeForcesUdtChain)
         {

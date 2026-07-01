@@ -191,4 +191,62 @@ public class GroupValidationTests
                 Assert.Equal("platform", reference!.Group);
             });
     }
+
+    [Fact]
+    public void SameGroupDifferentEnvironmentGroup_Throws_ASPIRERADIUS032()
+    {
+        WithModel(
+            b =>
+            {
+                b.AddRadiusEnvironment("radius").WithRadiusResourceGroup("a");
+                b.AddRadiusEnvironment("radius2").WithRadiusResourceGroup("b");
+                var api = b.AddContainer("api", "img", "latest");
+                // Same group ("a") but two different environment groups: mimics a parent/child
+                // route disagreeing on the environment group. annotations[^1] would silently win.
+                api.Resource.Annotations.Add(new RadiusResourceGroupAnnotation("a"));
+                api.Resource.Annotations.Add(new RadiusResourceGroupAnnotation("a", "b"));
+            },
+            model =>
+            {
+                var ex = Assert.Throws<InvalidOperationException>(() => RadiusGroupValidation.Validate(model));
+                Assert.Contains("ASPIRERADIUS032", ex.Message);
+                Assert.Contains("api", ex.Message);
+            });
+    }
+
+    [Fact]
+    public void GroupNamesDifferingOnlyByCase_Throw_ASPIRERADIUS038()
+    {
+        WithModel(
+            b =>
+            {
+                b.AddRadiusEnvironment("radius").WithRadiusResourceGroup("shared");
+                b.AddContainer("api", "img", "latest").WithRadiusResourceGroup("Shared");
+            },
+            model =>
+            {
+                var ex = Assert.Throws<InvalidOperationException>(() => RadiusGroupValidation.Validate(model));
+                Assert.Contains("ASPIRERADIUS038", ex.Message);
+            });
+    }
+
+    [Fact]
+    public void InvalidGroupNameViaAnnotation_Throws_ASPIRERADIUS033()
+    {
+        WithModel(
+            b =>
+            {
+                b.AddRadiusEnvironment("radius").WithRadiusResourceGroup("platform");
+                var api = b.AddContainer("api", "img", "latest");
+                // Bypasses the public overload's call-site validation; the orchestrator must
+                // still reject the invalid name so annotations can't smuggle it through.
+                api.Resource.Annotations.Add(new RadiusResourceGroupAnnotation("../escape"));
+            },
+            model =>
+            {
+                var ex = Assert.Throws<InvalidOperationException>(() => RadiusGroupValidation.Validate(model));
+                Assert.Contains("ASPIRERADIUS033", ex.Message);
+                Assert.Contains("api", ex.Message);
+            });
+    }
 }

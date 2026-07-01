@@ -89,12 +89,31 @@ public class WithRadiusResourceGroupTests
     [InlineData(".hidden")]
     [InlineData("trailingdot.")]
     [InlineData("has\tcontrol")]
+    [InlineData("a:b")]
+    [InlineData("a<b")]
+    [InlineData("a|b")]
+    [InlineData("a*b")]
+    [InlineData("CON")]
+    [InlineData("nul")]
+    [InlineData("COM1")]
+    [InlineData("LPT9")]
+    [InlineData("CON.bicep")]
     public void UnsafeGroupName_ThrowsArgumentException_ASPIRERADIUS033(string group)
     {
         var builder = DistributedApplication.CreateBuilder();
         var service = builder.AddContainer("svc", "img", "latest");
 
         var ex = Assert.Throws<ArgumentException>(() => service.WithRadiusResourceGroup(group));
+        Assert.Contains("ASPIRERADIUS033", ex.Message);
+    }
+
+    [Fact]
+    public void GroupNameExceedingMaxLength_ThrowsArgumentException_ASPIRERADIUS033()
+    {
+        var builder = DistributedApplication.CreateBuilder();
+        var service = builder.AddContainer("svc", "img", "latest");
+
+        var ex = Assert.Throws<ArgumentException>(() => service.WithRadiusResourceGroup(new string('a', 91)));
         Assert.Contains("ASPIRERADIUS033", ex.Message);
     }
 
@@ -124,13 +143,15 @@ public class WithRadiusResourceGroupTests
     }
 
     [Fact]
-    public void TwoArg_OnEnvironmentBuilder_ThrowsArgumentException()
+    public void TwoArg_OnEnvironmentBuilder_ThrowsInvalidOperationException()
     {
         var builder = DistributedApplication.CreateBuilder();
         var env = builder.AddRadiusEnvironment("radius");
 
-        // An environment does not deploy against another environment (contracts §1.1).
-        Assert.Throws<ArgumentException>(() => env.WithRadiusResourceGroup("platform", "data"));
+        // An environment does not deploy against another environment (contracts §1.1). The invalid
+        // input is the receiver type, not the environmentGroup argument, so this is an
+        // InvalidOperationException rather than an ArgumentException.
+        Assert.Throws<InvalidOperationException>(() => env.WithRadiusResourceGroup("platform", "data"));
     }
 
     [Fact]

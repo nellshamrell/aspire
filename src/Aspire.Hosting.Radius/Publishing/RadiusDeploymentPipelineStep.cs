@@ -9,7 +9,10 @@
 using System.Diagnostics;
 using Aspire.Hosting.ApplicationModel;
 using Aspire.Hosting.Pipelines;
+using Aspire.Hosting.Radius.ResourceGroups;
+using Aspire.Hosting.Radius.ResourceMapping;
 using Aspire.Hosting.Utils;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 namespace Aspire.Hosting.Radius.Publishing;
@@ -22,6 +25,10 @@ namespace Aspire.Hosting.Radius.Publishing;
 internal sealed class RadiusDeploymentPipelineStep
 {
     private const string RadInstallUrl = "https://docs.radapp.io/installation/";
+
+    // The single logical Aspire application name, identical across every group's artifact
+    // (the builder always names the application 'app'); forwarded as --application (FR-011).
+    private const string ApplicationName = "app";
 
     private readonly RadiusEnvironmentResource _environment;
 
@@ -63,6 +70,26 @@ internal sealed class RadiusDeploymentPipelineStep
         }
 
         logger.LogInformation("rad CLI detected on PATH for environment '{EnvironmentName}'", _environment.Name);
+
+        // Multi-group deploy: when any resource is routed to a Radius resource group, the
+        // primary environment owns a single group-ordered deploy (one `rad group create` +
+        // one `rad deploy` per group). Non-primary environments defer so each group deploys
+        // exactly once regardless of environment count (FR-012). The default no-group path
+        // below stays byte-for-byte identical (FR-016, SC-004).
+        var model = context.Model;
+        if (RadiusGroupOrchestrator.IsRoutingActive(model))
+        {
+            if (!IsPrimaryGroupEmitter(model))
+            {
+                logger.LogDebug(
+                    "Radius environment '{EnvironmentName}' defers multi-group deploy to the primary environment.",
+                    _environment.Name);
+                return;
+            }
+
+            await ExecuteGroupedAsync(context).ConfigureAwait(false);
+            return;
+        }
 
         // Resolve the output directory where Bicep was generated
         var outputDir = PublishingContextUtils.GetEnvironmentOutputPath(context, _environment);
@@ -203,7 +230,19 @@ internal sealed class RadiusDeploymentPipelineStep
         CancellationToken cancellationToken)
     {
         var annotation = _environment.Annotations.OfType<RadiusDeployParametersAnnotation>().LastOrDefault();
-        if (annotation is null || annotation.Parameters.Count == 0)
+        return await BuildParameterArgsAsync(annotation?.Parameters, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Builds the deterministic <c>--parameters name=value</c> tokens for a set of Bicep-param →
+    /// <see cref="ParameterResource"/> bindings and collects the secret values to scrub from logs.
+    /// Shared by the single-environment and per-group deploy paths (FR-013, SC-008).
+    /// </summary>
+    private static async Task<(IReadOnlyList<string> Args, IReadOnlyList<string> SecretValues)> BuildParameterArgsAsync(
+        IReadOnlyDictionary<string, ParameterResource>? bindings,
+        CancellationToken cancellationToken)
+    {
+        if (bindings is null || bindings.Count == 0)
         {
             return (Array.Empty<string>(), Array.Empty<string>());
         }
@@ -212,7 +251,7 @@ internal sealed class RadiusDeploymentPipelineStep
         var secretValues = new List<string>();
 
         // Order by identifier for deterministic command construction (stable logs and tests).
-        foreach (var (identifier, parameter) in annotation.Parameters.OrderBy(static p => p.Key, StringComparer.Ordinal))
+        foreach (var (identifier, parameter) in bindings.OrderBy(static p => p.Key, StringComparer.Ordinal))
         {
             var value = await parameter.GetValueAsync(cancellationToken).ConfigureAwait(false) ?? string.Empty;
 
@@ -228,6 +267,287 @@ internal sealed class RadiusDeploymentPipelineStep
         }
 
         return (args, secretValues);
+    }
+
+    /// <summary>
+    /// Returns <see langword="true"/> when this environment owns the single group-ordered deploy —
+    /// the first <see cref="RadiusEnvironmentResource"/> in model order. Mirrors the publish step's
+    /// primary-emitter rule so each group is deployed exactly once even with several environments.
+    /// </summary>
+    private bool IsPrimaryGroupEmitter(DistributedApplicationModel model)
+    {
+        var primary = model.Resources.OfType<RadiusEnvironmentResource>().FirstOrDefault();
+        return ReferenceEquals(primary, _environment);
+    }
+
+    /// <summary>
+    /// A single group's planned <c>rad</c> invocations: an idempotent <c>rad group create</c>
+    /// followed by exactly one <c>rad deploy</c> (FR-010, FR-012), plus the secret parameter values
+    /// to redact from logs (FR-013, SC-008).
+    /// </summary>
+    internal sealed record RadGroupDeployCommand(
+        string Group,
+        IReadOnlyList<string> GroupCreateArguments,
+        IReadOnlyList<string> DeployArguments,
+        IReadOnlyList<string> SecretValues);
+
+    /// <summary>
+    /// Plans the per-group <c>rad</c> invocations for a multi-group deploy: one entry per group in
+    /// topological deploy order (dependencies first, SC-002). Each entry issues an idempotent
+    /// <c>rad group create</c> then a single <c>rad deploy groups/&lt;group&gt;/app.bicep</c> with
+    /// explicit <c>--group</c>, the inert first-declared (or cross-group UCP) <c>--environment</c>,
+    /// the shared <c>--application</c>, an optional <c>--workspace</c>, and this group's resolved
+    /// <c>--parameters</c> (FR-009 – FR-013). Pure planning: no processes are launched.
+    /// </summary>
+    internal static async Task<IReadOnlyList<RadGroupDeployCommand>> PlanGroupDeployAsync(
+        DistributedApplicationModel model,
+        string rootOutputDir,
+        string? workspace,
+        DistributedApplicationExecutionContext executionContext,
+        ILogger logger,
+        CancellationToken cancellationToken)
+    {
+        var orchestrator = RadiusGroupOrchestrator.Create(model);
+        var typeMapper = new ResourceTypeMapper(logger);
+        var partitionByGroup = orchestrator.Partitions.ToDictionary(static p => p.Group, StringComparer.Ordinal);
+
+        var commands = new List<RadGroupDeployCommand>();
+
+        foreach (var group in orchestrator.DeployOrder)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (!partitionByGroup.TryGetValue(group, out var partition))
+            {
+                // Group is only named as a cross-group target and carries nothing of its own.
+                continue;
+            }
+
+            var resolved = RadiusBicepPublishingContext.ResolveGroupBuild(orchestrator, partition);
+            if (resolved is not { } build)
+            {
+                continue;
+            }
+
+            var (environment, groupContext) = build;
+
+            // The inert --environment default: the group's first-declared environment name when it
+            // owns one, or the cross-group environment's full UCP ID otherwise (FR-011, FR-005).
+            var environmentArg = groupContext.CrossGroupEnvironmentId ?? environment.Name;
+
+            // Resolve this group's recipe-parameter bindings from its own bicep so every valueless
+            // Bicep param is forwarded via --parameters, with secret values collected for redaction.
+            var builder = new RadiusInfrastructureBuilder(environment, model, typeMapper, logger, groupContext);
+            var options = await builder.BuildAsync(executionContext, cancellationToken).ConfigureAwait(false);
+            var (parameterArgs, secretValues) = await BuildParameterArgsAsync(
+                options.RecipeParameterBindings, cancellationToken).ConfigureAwait(false);
+
+            var bicepPath = Path.Combine(rootOutputDir, "groups", group, "app.bicep");
+
+            var groupCreateArgs = new List<string> { "group", "create", group };
+            if (!string.IsNullOrEmpty(workspace))
+            {
+                groupCreateArgs.Add("-w");
+                groupCreateArgs.Add(workspace);
+            }
+
+            var deployArgs = new List<string>
+            {
+                "deploy",
+                bicepPath,
+                "--group", group,
+                "--environment", environmentArg,
+                "--application", ApplicationName,
+            };
+            if (!string.IsNullOrEmpty(workspace))
+            {
+                deployArgs.Add("--workspace");
+                deployArgs.Add(workspace);
+            }
+            deployArgs.AddRange(parameterArgs);
+
+            commands.Add(new RadGroupDeployCommand(group, groupCreateArgs, deployArgs, secretValues));
+        }
+
+        return commands;
+    }
+
+    /// <summary>
+    /// Deploys every Radius resource group in topological order via one idempotent
+    /// <c>rad group create</c> and one <c>rad deploy</c> per group. Fails on the first group
+    /// failure with no custom cross-group rollback; a re-run is idempotent (FR-014).
+    /// </summary>
+    private static async Task ExecuteGroupedAsync(PipelineStepContext context)
+    {
+        var cancellationToken = context.CancellationToken;
+        var logger = context.Logger;
+        var model = context.Model;
+
+        var rootOutputDir = context.Services
+            .GetRequiredService<IPipelineOutputService>()
+            .GetOutputDirectory();
+
+        // FR-017: --workspace is passed only when a non-default workspace is configured. No
+        // workspace-configuration surface exists yet, so the ambient workspace is used.
+        string? workspace = null;
+
+        var commands = await PlanGroupDeployAsync(
+            model, rootOutputDir, workspace, context.ExecutionContext, logger, cancellationToken).ConfigureAwait(false);
+
+        if (commands.Count == 0)
+        {
+            logger.LogWarning("No Radius resource groups resolved for deployment; nothing to deploy.");
+            return;
+        }
+
+        foreach (var command in commands)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            logger.LogInformation("Deploying Radius resource group '{Group}'", command.Group);
+
+            // Idempotent group create — a pre-existing group is treated as success (FR-010).
+            await RunRadProcessAsync(
+                rootOutputDir,
+                command.GroupCreateArguments,
+                Array.Empty<string>(),
+                $"Ensuring Radius resource group '{command.Group}' exists...",
+                $"Radius resource group '{command.Group}' ready",
+                treatAlreadyExistsAsSuccess: true,
+                context).ConfigureAwait(false);
+
+            // Exactly one rad deploy per group (FR-012).
+            await RunRadProcessAsync(
+                rootOutputDir,
+                command.DeployArguments,
+                command.SecretValues,
+                $"Deploying Radius resource group '{command.Group}' via rad deploy...",
+                $"Radius deployment complete for group '{command.Group}'",
+                treatAlreadyExistsAsSuccess: false,
+                context).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Runs a single <c>rad</c> invocation, streaming redacted stdout/stderr to the logger and the
+    /// reporting step. Throws <see cref="InvalidOperationException"/> on a non-zero exit unless
+    /// <paramref name="treatAlreadyExistsAsSuccess"/> is set and the failure is an already-exists
+    /// group create (FR-010, FR-014).
+    /// </summary>
+    private static async Task RunRadProcessAsync(
+        string workingDirectory,
+        IReadOnlyList<string> arguments,
+        IReadOnlyList<string> secretValues,
+        string taskDescription,
+        string completionDescription,
+        bool treatAlreadyExistsAsSuccess,
+        PipelineStepContext context)
+    {
+        var cancellationToken = context.CancellationToken;
+        var logger = context.Logger;
+
+        var task = await context.ReportingStep.CreateTaskAsync(taskDescription, cancellationToken).ConfigureAwait(false);
+
+        try
+        {
+            var stderrBuilder = new System.Text.StringBuilder();
+
+            using var process = new Process();
+            process.StartInfo = new ProcessStartInfo
+            {
+                FileName = "rad",
+                WorkingDirectory = workingDirectory,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+            foreach (var arg in arguments)
+            {
+                process.StartInfo.ArgumentList.Add(arg);
+            }
+
+            var loggedArgs = RadCredentialRegisterStep.RedactSecretValues(
+                string.Join(' ', process.StartInfo.ArgumentList), secretValues);
+            logger.LogInformation("Running: rad {Args}", loggedArgs);
+
+            process.OutputDataReceived += (_, e) =>
+            {
+                if (e.Data is not null)
+                {
+                    var redacted = RadCredentialRegisterStep.RedactSecretValues(e.Data, secretValues);
+                    logger.LogInformation("rad (stdout): {Output}", redacted);
+                    context.ReportingStep.Log(LogLevel.Information, redacted);
+                }
+            };
+
+            process.ErrorDataReceived += (_, e) =>
+            {
+                if (e.Data is not null)
+                {
+                    var redacted = RadCredentialRegisterStep.RedactSecretValues(e.Data, secretValues);
+                    stderrBuilder.AppendLine(redacted);
+                    logger.LogWarning("rad (stderr): {Error}", redacted);
+                    context.ReportingStep.Log(LogLevel.Warning, redacted);
+                }
+            };
+
+            process.Start();
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+
+            try
+            {
+                await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                if (!process.HasExited)
+                {
+                    try
+                    {
+                        process.Kill(entireProcessTree: true);
+                    }
+                    catch (InvalidOperationException)
+                    {
+                        // Race: the process exited between HasExited check and Kill. Nothing to do.
+                    }
+                }
+
+                throw;
+            }
+
+            var exitCode = process.ExitCode;
+            if (exitCode != 0)
+            {
+                var stderrText = stderrBuilder.ToString().Trim();
+
+                // Idempotent group create: an already-existing group is a success, not a failure.
+                if (treatAlreadyExistsAsSuccess &&
+                    stderrText.Contains("already exists", StringComparison.OrdinalIgnoreCase))
+                {
+                    logger.LogInformation("Radius resource group already exists — treating as success.");
+                    await task.CompleteAsync(completionDescription, cancellationToken: cancellationToken).ConfigureAwait(false);
+                    return;
+                }
+
+                var errorMessage = string.IsNullOrEmpty(stderrText)
+                    ? $"rad {arguments[0]} failed with exit code {exitCode}"
+                    : $"rad {arguments[0]} failed with exit code {exitCode}: {stderrText}";
+
+                logger.LogError("{ErrorMessage}", errorMessage);
+                context.ReportingStep.Log(LogLevel.Error, errorMessage);
+                throw new InvalidOperationException(errorMessage);
+            }
+
+            await task.CompleteAsync(completionDescription, cancellationToken: cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not InvalidOperationException and not OperationCanceledException)
+        {
+            logger.LogError(ex, "Unexpected error during rad invocation");
+            context.ReportingStep.Log(LogLevel.Error, ex.Message);
+            throw;
+        }
     }
 
     /// <summary>

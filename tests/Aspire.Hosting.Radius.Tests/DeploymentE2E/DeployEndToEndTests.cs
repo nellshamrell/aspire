@@ -73,8 +73,15 @@ public class DeployEndToEndTests
         var context = new RadiusBicepPublishingContext(radiusEnv);
         var bicep = context.GenerateBicep(model);
 
-        // Connection strings should reference resource IDs, not hardcoded secrets.
-        Assert.DoesNotContain("password", bicep, StringComparison.OrdinalIgnoreCase);
+        // Secrets must flow through valueless Bicep `param`s (resolved at deploy time via
+        // `rad deploy --parameters`), never embedded as literals. The word "password"
+        // legitimately appears as a parameter *name* (e.g. `param sqlserver_password string`)
+        // and as an environment-variable reference to that param — that is the secure shape.
+        // Assert the invariant precisely rather than banning the substring "password":
+        //   * at least one secret is surfaced as a valueless `param ... string` (no default), and
+        //   * no secret param carries a hardcoded literal default value.
+        Assert.Matches(@"(?im)^\s*param\s+\w*password\w*\s+string\s*$", bicep);
+        Assert.DoesNotMatch(@"(?i)param\s+\w*password\w*\s+string\s*=", bicep);
         Assert.Contains(".id", bicep);
     }
 

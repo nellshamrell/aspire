@@ -12,6 +12,7 @@ using System.Runtime.CompilerServices;
 using System.Text;
 using Aspire.Hosting.ApplicationModel;
 using Aspire.Hosting.Radius.Publishing.Constructs;
+using Aspire.Hosting.Radius.ResourceGroups;
 using Aspire.Hosting.Radius.ResourceMapping;
 using Azure.Provisioning;
 using Azure.Provisioning.Expressions;
@@ -32,6 +33,17 @@ internal sealed class RadiusInfrastructureBuilder
     private readonly DistributedApplicationModel _model;
     private readonly ResourceTypeMapper _typeMapper;
     private readonly ILogger _logger;
+
+    /// <summary>
+    /// When non-<see langword="null"/>, restricts the build to the resources routed to a single
+    /// Radius resource group and carries the whole-model group map used to render cross-group
+    /// <c>WithReference</c> / environment targets as full UCP IDs (FR-004, FR-005). In the grouped
+    /// publish path each <c>groups/&lt;group&gt;/app.bicep</c> is produced by a builder scoped to
+    /// that group's resources, materializing the single logical application once per group (FR-007).
+    /// When <see langword="null"/> the builder uses the default per-environment deployment-target
+    /// scoping (the no-group path, unchanged).
+    /// </summary>
+    private readonly RadiusGroupContext? _groupContext;
 
     /// <summary>
     /// Bicep <c>param</c> declarations accumulated for recipe parameter values bound to
@@ -88,12 +100,14 @@ internal sealed class RadiusInfrastructureBuilder
         RadiusEnvironmentResource environment,
         DistributedApplicationModel model,
         ResourceTypeMapper typeMapper,
-        ILogger logger)
+        ILogger logger,
+        RadiusGroupContext? groupContext = null)
     {
         _environment = environment;
         _model = model;
         _typeMapper = typeMapper;
         _logger = logger;
+        _groupContext = groupContext;
     }
 
     /// <summary>
@@ -271,25 +285,42 @@ internal sealed class RadiusInfrastructureBuilder
         RadiusApplicationConstruct? appConstruct = null;
         var appIdentifier = "app";
 
+        // When this group's application deploys against an environment owned by another group,
+        // that environment (and its recipe pack) is materialized in the other group's app.bicep.
+        // This group must not re-declare it — every environment reference is the cross-group
+        // environment's full UCP ID instead (FR-005); only the single logical application chain
+        // for this group's resources is emitted here.
+        var isCrossGroupEnvironment = _groupContext?.CrossGroupEnvironmentId is not null;
+
         if (hasUdtResources || computeForcesUdtChain)
         {
-            // UDT containers route to Radius.Compute/containers, which the control plane
-            // provisions through a recipe. Register the default container recipe in the
-            // pack so native containers deploy on shipped Radius without a hand-authored
-            // recipe — mirroring how backing resources get their default recipes.
-            if (computeForcesUdtChain)
+            if (isCrossGroupEnvironment)
             {
-                AddRecipeEntry(udtRecipeEntries, RadiusResourceTypes.Containers, null);
+                // Cross-group environment target: emit only the application, wired to the
+                // cross-group environment's UCP ID. No local environment or recipe pack.
+                appConstruct = CreateApplicationConstruct(appIdentifier, null);
+                options.Applications.Add(appConstruct);
             }
+            else
+            {
+                // UDT containers route to Radius.Compute/containers, which the control plane
+                // provisions through a recipe. Register the default container recipe in the
+                // pack so native containers deploy on shipped Radius without a hand-authored
+                // recipe — mirroring how backing resources get their default recipes.
+                if (computeForcesUdtChain)
+                {
+                    AddRecipeEntry(udtRecipeEntries, RadiusResourceTypes.Containers, null);
+                }
 
-            recipePackConstruct = CreateRecipePackConstruct(recipePackIdentifier, udtRecipeEntries);
-            options.RecipePacks.Add(recipePackConstruct);
+                recipePackConstruct = CreateRecipePackConstruct(recipePackIdentifier, udtRecipeEntries);
+                options.RecipePacks.Add(recipePackConstruct);
 
-            envConstruct = CreateEnvironmentConstruct(envIdentifier, recipePackConstruct);
-            options.Environments.Add(envConstruct);
+                envConstruct = CreateEnvironmentConstruct(envIdentifier, recipePackConstruct);
+                options.Environments.Add(envConstruct);
 
-            appConstruct = CreateApplicationConstruct(appIdentifier, envConstruct);
-            options.Applications.Add(appConstruct);
+                appConstruct = CreateApplicationConstruct(appIdentifier, envConstruct);
+                options.Applications.Add(appConstruct);
+            }
         }
 
         // 3. Legacy parents are emitted lazily — only if any legacy resource is
@@ -322,7 +353,7 @@ internal sealed class RadiusInfrastructureBuilder
         // Track each builder-created instance's parent pair so RewireIdReferences
         // can re-resolve `.id` after callbacks without clobbering resources that
         // a callback added itself.
-        var instanceParents = new Dictionary<RadiusResourceTypeConstruct, (ProvisionableResource Env, ProvisionableResource App)>();
+        var instanceParents = new Dictionary<RadiusResourceTypeConstruct, (ProvisionableResource? Env, ProvisionableResource App)>();
 
         foreach (var resource in radiusResources)
         {
@@ -349,7 +380,10 @@ internal sealed class RadiusInfrastructureBuilder
                 ? resource.Name
                 : null;
 
-            ProvisionableResource parentEnv = isLegacy ? legacyEnvConstruct! : envConstruct!;
+            // In the cross-group environment path there is no local UDT environment construct
+            // (the environment lives in another group); the instance's environment is the
+            // cross-group UCP ID resolved by CreateResourceTypeConstruct, so parentEnv is null.
+            ProvisionableResource? parentEnv = isLegacy ? legacyEnvConstruct! : envConstruct;
             ProvisionableResource parentApp = isLegacy ? legacyAppConstruct! : appConstruct!;
 
             var typeInstance = CreateResourceTypeConstruct(
@@ -373,6 +407,7 @@ internal sealed class RadiusInfrastructureBuilder
             var identifier = BicepPostProcessor.SanitizeIdentifier(resource.Name);
             var image = GetContainerImage(resource);
             var connectionTargets = GetConnectionTargets(resource, radiusResources, typeInstancesByResourceName);
+            var crossGroupConnections = GetCrossGroupConnections(resource);
 
             WarnIfImageMayNotPull(resource.Name, image);
 
@@ -386,14 +421,14 @@ internal sealed class RadiusInfrastructureBuilder
             if (useLegacyContainers)
             {
                 var legacyContainerConstruct = CreateLegacyContainerConstruct(
-                    identifier, resource.Name, image, legacyAppConstruct!, connectionTargets, env, ports);
+                    identifier, resource.Name, image, legacyAppConstruct!, connectionTargets, crossGroupConnections, env, ports);
                 options.LegacyContainers.Add(legacyContainerConstruct);
                 legacyContainerConnectionTargets[legacyContainerConstruct] = connectionTargets;
             }
             else
             {
                 var containerConstruct = CreateContainerConstruct(
-                    identifier, resource.Name, image, appConstruct!, envConstruct!, connectionTargets, env, ports);
+                    identifier, resource.Name, image, appConstruct!, envConstruct, connectionTargets, crossGroupConnections, env, ports);
                 options.Containers.Add(containerConstruct);
                 containerConnectionTargets[containerConstruct] = connectionTargets;
             }
@@ -411,7 +446,7 @@ internal sealed class RadiusInfrastructureBuilder
             options.RecipePacks.ToDictionary(p => p, p => p.BicepIdentifier),
             instanceParents.ToDictionary(
                 kv => kv.Key,
-                kv => (EnvId: kv.Value.Env.BicepIdentifier,
+                kv => (EnvId: kv.Value.Env?.BicepIdentifier,
                        AppId: kv.Value.App.BicepIdentifier)),
             containerConnectionTargets.ToDictionary(
                 kv => kv.Key,
@@ -463,7 +498,7 @@ internal sealed class RadiusInfrastructureBuilder
         string? LegacyEnvId,
         string? LegacyAppId,
         Dictionary<RadiusRecipePackConstruct, string> RecipePackIds,
-        Dictionary<RadiusResourceTypeConstruct, (string EnvId, string AppId)> InstanceParentIds,
+        Dictionary<RadiusResourceTypeConstruct, (string? EnvId, string AppId)> InstanceParentIds,
         Dictionary<RadiusContainerConstruct, Dictionary<string, string>> ContainerConnectionTargetIds,
         Dictionary<LegacyContainerConstruct, Dictionary<string, string>> LegacyContainerConnectionTargetIds);
 
@@ -488,7 +523,7 @@ internal sealed class RadiusInfrastructureBuilder
         RadiusEnvironmentConstruct? envConstruct,
         LegacyApplicationConstruct? legacyAppConstruct,
         LegacyApplicationEnvironmentConstruct? legacyEnvConstruct,
-        Dictionary<RadiusResourceTypeConstruct, (ProvisionableResource Env, ProvisionableResource App)> instanceParents,
+        Dictionary<RadiusResourceTypeConstruct, (ProvisionableResource? Env, ProvisionableResource App)> instanceParents,
         Dictionary<RadiusContainerConstruct, Dictionary<string, RadiusResourceTypeConstruct>> containerConnectionTargets,
         Dictionary<LegacyContainerConstruct, Dictionary<string, RadiusResourceTypeConstruct>> legacyContainerConnectionTargets,
         IdentifierSnapshot snapshot)
@@ -551,7 +586,8 @@ internal sealed class RadiusInfrastructureBuilder
                 instance.ApplicationId = BuildIdExpression(parents.App);
             }
 
-            if (!string.Equals(parents.Env.BicepIdentifier, snapIds.EnvId, StringComparison.Ordinal))
+            if (parents.Env is not null &&
+                !string.Equals(parents.Env.BicepIdentifier, snapIds.EnvId, StringComparison.Ordinal))
             {
                 instance.EnvironmentId = BuildIdExpression(parents.Env);
             }
@@ -681,9 +717,20 @@ internal sealed class RadiusInfrastructureBuilder
                 continue;
             }
 
+            if (_groupContext is not null)
+            {
+                // Grouped publish path: include the resource only when it is routed to the group
+                // this builder is scoped to (FR-007). Group routing supersedes the per-environment
+                // deployment-target filter; resource-to-group resolution is owned by the
+                // RadiusGroupOrchestrator, whose partition names are passed in here.
+                if (!_groupContext.ResourceNames.Contains(ResolveToParent(resource).Name))
+                {
+                    continue;
+                }
+            }
             // Check deployment target: only include resources targeted to this environment
             // or resources with no explicit target (default to this environment)
-            if (!IsTargetedToThisEnvironment(resource))
+            else if (!IsTargetedToThisEnvironment(resource))
             {
                 continue;
             }
@@ -892,6 +939,72 @@ internal sealed class RadiusInfrastructureBuilder
         return new MemberExpression(new IdentifierExpression(resource.BicepIdentifier), "id");
     }
 
+    /// <summary>
+    /// Resolves the value emitted for a construct's <c>properties.environment</c>. When the group
+    /// this builder emits deploys against an environment owned by another group, that environment
+    /// is materialized in the other group's <c>app.bicep</c>, so the reference is the environment's
+    /// full UCP ID (FR-005). Otherwise the bare in-group <c>.id</c> expression is emitted, unchanged.
+    /// </summary>
+    private BicepValue<string> ResolveEnvironmentId(Azure.Provisioning.Primitives.ProvisionableResource? envConstruct)
+    {
+        if (_groupContext?.CrossGroupEnvironmentId is { } ucpEnvironmentId)
+        {
+            return ucpEnvironmentId;
+        }
+
+        return BuildIdExpression(envConstruct!);
+    }
+
+    /// <summary>
+    /// A cross-group connection: the referenced resource's name and the full UCP ID emitted as the
+    /// connection <c>source</c> because the target is routed to a different group (FR-004).
+    /// </summary>
+    private readonly record struct CrossGroupConnectionSource(string Name, string UcpSourceId);
+
+    /// <summary>
+    /// Computes the cross-group connections for a compute resource: each <c>WithReference</c> whose
+    /// target is routed to a different group emits its connection <c>source</c> as the target's full
+    /// UCP ID (FR-004). In-group references keep the bare identifier via
+    /// <see cref="GetConnectionTargets"/>. Returns empty outside the grouped publish path.
+    /// </summary>
+    private List<CrossGroupConnectionSource> GetCrossGroupConnections(IResource resource)
+    {
+        var result = new List<CrossGroupConnectionSource>();
+        if (_groupContext is null)
+        {
+            return result;
+        }
+
+        var references = resource.Annotations
+            .OfType<ResourceRelationshipAnnotation>()
+            .Where(static r => r.Type == "Reference");
+
+        foreach (var reference in references)
+        {
+            var target = ResolveToParent(reference.Resource);
+
+            if (!_groupContext.ReferenceByResourceName.TryGetValue(target.Name, out var targetReference)
+                || string.Equals(targetReference.Group, _groupContext.Group, StringComparison.Ordinal))
+            {
+                // Unrouted or in-group target: handled by GetConnectionTargets (bare identifier).
+                continue;
+            }
+
+            // Only backing (non-compute) Radius resource-type targets carry a connection source.
+            var (resourceType, _) = ResolveResourceType(target);
+            if (string.Equals(resourceType, RadiusResourceTypes.Containers, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            result.Add(new CrossGroupConnectionSource(
+                target.Name,
+                targetReference.ToUcpResourceId(resourceType, target.Name)));
+        }
+
+        return result;
+    }
+
     private RadiusEnvironmentConstruct CreateEnvironmentConstruct(
         string identifier, RadiusRecipePackConstruct recipePackConstruct)
     {
@@ -957,24 +1070,24 @@ internal sealed class RadiusInfrastructureBuilder
     private static string BuildAwsScope(CloudProviders.AwsRadiusProviderConfig aws)
         => $"/planes/aws/aws/accounts/{aws.AccountId}/regions/{aws.Region}";
 
-    private static RadiusApplicationConstruct CreateApplicationConstruct(
-        string identifier, RadiusEnvironmentConstruct envConstruct)
+    private RadiusApplicationConstruct CreateApplicationConstruct(
+        string identifier, RadiusEnvironmentConstruct? envConstruct)
     {
         var construct = new RadiusApplicationConstruct(identifier);
         construct.ApplicationName = identifier;
-        construct.EnvironmentId = BuildIdExpression(envConstruct);
+        construct.EnvironmentId = ResolveEnvironmentId(envConstruct);
         return construct;
     }
 
     private RadiusResourceTypeConstruct CreateResourceTypeConstruct(
         string identifier, string resourceName, string resourceType, string apiVersion,
-        ProvisionableResource appConstruct, ProvisionableResource envConstruct,
+        ProvisionableResource appConstruct, ProvisionableResource? envConstruct,
         bool isLegacy, RadiusRecipe? recipe, string? instanceRecipeNameOverride = null)
     {
         var construct = new RadiusResourceTypeConstruct(identifier, resourceType, apiVersion);
         construct.ResourceName = resourceName;
         construct.ApplicationId = BuildIdExpression(appConstruct);
-        construct.EnvironmentId = BuildIdExpression(envConstruct);
+        construct.EnvironmentId = ResolveEnvironmentId(envConstruct);
 
         // Instance-level recipe name/parameters apply only to legacy Applications.* types, whose
         // environment still supports named recipes. Native (Radius.*) UDT instances bind their
@@ -1560,11 +1673,12 @@ internal sealed class RadiusInfrastructureBuilder
         return connections;
     }
 
-    private static RadiusContainerConstruct CreateContainerConstruct(
+    private RadiusContainerConstruct CreateContainerConstruct(
         string identifier, string resourceName, string image,
         RadiusApplicationConstruct appConstruct,
-        RadiusEnvironmentConstruct envConstruct,
+        RadiusEnvironmentConstruct? envConstruct,
         Dictionary<string, RadiusResourceTypeConstruct> connectionTargets,
+        IReadOnlyList<CrossGroupConnectionSource> crossGroupConnections,
         IReadOnlyDictionary<string, ContainerEnvVarConstruct> env,
         IReadOnlyDictionary<string, ContainerPortConstruct> ports)
     {
@@ -1572,7 +1686,7 @@ internal sealed class RadiusInfrastructureBuilder
         construct.ContainerName = resourceName;
         construct.Image = image;
         construct.ApplicationId = BuildIdExpression(appConstruct);
-        construct.EnvironmentId = BuildIdExpression(envConstruct);
+        construct.EnvironmentId = ResolveEnvironmentId(envConstruct);
 
         if (connectionTargets.Count > 0)
         {
@@ -1582,6 +1696,13 @@ internal sealed class RadiusInfrastructureBuilder
                 connectionConstruct.Source = BuildIdExpression(targetConstruct);
                 construct.Connections[name] = connectionConstruct;
             }
+        }
+
+        foreach (var crossGroup in crossGroupConnections)
+        {
+            var connectionConstruct = new ConnectionConstruct();
+            connectionConstruct.Source = crossGroup.UcpSourceId;
+            construct.Connections[crossGroup.Name] = connectionConstruct;
         }
 
         foreach (var (name, envVar) in env)
@@ -1601,6 +1722,7 @@ internal sealed class RadiusInfrastructureBuilder
         string identifier, string resourceName, string image,
         LegacyApplicationConstruct legacyAppConstruct,
         Dictionary<string, RadiusResourceTypeConstruct> connectionTargets,
+        IReadOnlyList<CrossGroupConnectionSource> crossGroupConnections,
         IReadOnlyDictionary<string, ContainerEnvVarConstruct> env,
         IReadOnlyDictionary<string, ContainerPortConstruct> ports)
     {
@@ -1617,6 +1739,13 @@ internal sealed class RadiusInfrastructureBuilder
                 connectionConstruct.Source = BuildIdExpression(targetConstruct);
                 construct.Connections[name] = connectionConstruct;
             }
+        }
+
+        foreach (var crossGroup in crossGroupConnections)
+        {
+            var connectionConstruct = new ConnectionConstruct();
+            connectionConstruct.Source = crossGroup.UcpSourceId;
+            construct.Connections[crossGroup.Name] = connectionConstruct;
         }
 
         foreach (var (name, envVar) in env)

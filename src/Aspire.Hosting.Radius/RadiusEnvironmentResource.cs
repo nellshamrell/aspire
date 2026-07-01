@@ -8,6 +8,7 @@ using System.Diagnostics.CodeAnalysis;
 using Aspire.Hosting.ApplicationModel;
 using Aspire.Hosting.Pipelines;
 using Aspire.Hosting.Radius.Publishing;
+using Aspire.Hosting.Radius.ResourceGroups;
 
 namespace Aspire.Hosting.Radius;
 
@@ -54,6 +55,18 @@ public sealed class RadiusEnvironmentResource : Resource, IComputeEnvironmentRes
             var publishStep = new RadiusBicepPublishingContext(this).CreatePipelineStep();
             var deployStep = new RadiusDeploymentPipelineStep(this).CreatePipelineStep();
 
+            // Fail-fast Radius resource-group validation gate: RequiredBy this environment's
+            // publish and deploy steps so orphan/ambiguous/unresolvable/cycle failures surface
+            // before any Bicep is emitted or rad is contacted (FR-003, FR-006). It is a no-op
+            // when no resource is routed to a group, keeping the default path unchanged.
+            var validateGroupsStep = new PipelineStep
+            {
+                Name = $"validate-radius-groups-{Name}",
+                Description = $"Validates Radius resource-group routing for {Name}.",
+                Action = RadiusGroupValidation.ValidateAsync,
+                RequiredBySteps = [publishStep.Name, deployStep.Name],
+            };
+
             // Only schedule the credential-register step when the environment
             // has cloud-provider configuration attached. Apps without the new
             // WithAzure/WithAws extensions emit byte-identical pipelines.
@@ -63,10 +76,10 @@ public sealed class RadiusEnvironmentResource : Resource, IComputeEnvironmentRes
             if (hasCloudProviders)
             {
                 var registerStep = new RadCredentialRegisterStep(this).CreatePipelineStep();
-                return [prepareStep, publishStep, registerStep, deployStep];
+                return [validateGroupsStep, prepareStep, publishStep, registerStep, deployStep];
             }
 
-            return [prepareStep, publishStep, deployStep];
+            return [validateGroupsStep, prepareStep, publishStep, deployStep];
         }));
     }
 

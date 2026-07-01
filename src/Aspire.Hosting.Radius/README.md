@@ -99,6 +99,52 @@ credential-registration path.
 
 See [specs/003-cloud-providers/quickstart.md](../../../specs/003-cloud-providers/quickstart.md) for an end-to-end walkthrough.
 
+## Multiple resource groups
+
+> **Experimental** — `WithRadiusResourceGroup` is gated by `ASPIRERADIUS005`. Suppress the
+> diagnostic (`#pragma warning disable ASPIRERADIUS005`) to opt in.
+
+Route each resource into a named [Radius resource group](https://docs.radapp.io/guides/resources/) to
+partition a single app graph into independently published and deployed units. When any resource is
+routed, `aspire publish` emits one `groups/<group>/app.bicep` per group (each carrying only that
+group's resources plus the single logical application), and `aspire deploy` creates every group
+idempotently and deploys them in dependency order with one `rad deploy` per group.
+
+```csharp
+#pragma warning disable ASPIRERADIUS005
+
+// Shared infrastructure in its own group, with its own environment and configuration.
+builder.AddRadiusEnvironment("data-env")
+    .WithRadiusResourceGroup("shared-data")
+    .WithNamespace("shared-data-ns");
+var db = builder.AddPostgres("db").WithRadiusResourceGroup("shared-data");
+
+// A per-service group; a cross-group WithReference emits the target's full UCP ID.
+builder.AddRadiusEnvironment("orders-env").WithRadiusResourceGroup("orders");
+builder.AddProject<Projects.Orders>("orders")
+    .WithRadiusResourceGroup("orders")
+    .WithReference(db);
+
+#pragma warning restore ASPIRERADIUS005
+```
+
+Key behaviours:
+
+- **Exactly one group per resource** — every routable resource and environment must resolve to a
+  single group (`ASPIRERADIUS031`/`ASPIRERADIUS032`).
+- **Cross-group references and environment targets** are emitted as fully-qualified UCP IDs; the
+  union of these edges must be acyclic (`ASPIRERADIUS035`).
+- **Cross-group environment targets** — a group without its own environment can deploy against
+  another group's environment via `WithRadiusResourceGroup(group, environmentGroup)`
+  (`ASPIRERADIUS034` if the target group owns no environment).
+- **Per-group configuration** — providers, namespace, recipe packs, and recipe parameters compose
+  per group into that group's environment.
+- **No-group default is unchanged** — when no resource is routed to a group, publish/deploy behave
+  byte-for-byte as before.
+
+See [specs/007-multi-resource-groups/quickstart.md](../../../specs/007-multi-resource-groups/quickstart.md)
+for an end-to-end walkthrough.
+
 ## Diagnostics
 
 The package uses the `ASPIRERADIUS` diagnostic prefix for two distinct mechanisms, with
@@ -106,9 +152,10 @@ disjoint numeric ranges reserved so the IDs never collide:
 
 | Range | Mechanism | Surfaced as |
 |-------|-----------|-------------|
-| `ASPIRERADIUS001`–`ASPIRERADIUS009` | Compile-time analyzer diagnostics for experimental APIs | `[Experimental]` warnings (suppressible), documented at `https://aka.ms/aspire/diagnostics/<id>` |
+| `ASPIRERADIUS001`–`ASPIRERADIUS009` | Compile-time analyzer diagnostics for experimental APIs (incl. `ASPIRERADIUS005` for `WithRadiusResourceGroup`) | `[Experimental]` warnings (suppressible), documented at `https://aka.ms/aspire/diagnostics/<id>` |
 | `ASPIRERADIUS010`–`ASPIRERADIUS019` | Cloud-provider configuration errors | Thrown `InvalidOperationException` (message includes the ID) |
 | `ASPIRERADIUS020`–`ASPIRERADIUS029` | Cloud-managed resource (`WithManagedResource`) and recipe/recipe-parameter validation | Thrown `ArgumentException` (config time) / `InvalidOperationException` (publish time) |
+| `ASPIRERADIUS030`–`ASPIRERADIUS039` | Multi-resource-group routing (`WithRadiusResourceGroup`) validation | Thrown `ArgumentException` (call site, e.g. empty name) / `InvalidOperationException` (fail-fast gate before publish/deploy) |
 
 Runtime validation codes:
 
@@ -124,6 +171,11 @@ Runtime validation codes:
 | `ASPIRERADIUS026` | Publish | Multiple instances of one user-defined (`Radius.*`) type resolve to different recipes or recipe parameters; Radius binds one recipe (with one parameter set) per type per environment. |
 | `ASPIRERADIUS027` | Publish | A per-instance recipe name or parameters were set (via `PublishAsRadiusResource(c => c.Recipe...)`) on a native (`Radius.*`) type or native container; these are unsupported. Use `WithRecipeParameters(resourceType, ...)` on the environment instead. |
 | `ASPIRERADIUS028` | Publish | Two recipe parameters bound to different Aspire parameters sanitize to the same Bicep identifier. Rename one so they produce distinct identifiers. |
+| `ASPIRERADIUS031` | Publish/Deploy gate | A compute/backing resource or environment is not assigned to any Radius resource group (orphaned). Route it with `WithRadiusResourceGroup(...)`. |
+| `ASPIRERADIUS032` | Publish/Deploy gate | A resource is ambiguously assigned to more than one Radius resource group; it must resolve to exactly one. Keep a single `WithRadiusResourceGroup(...)` call per resource (the last call wins if repeated). |
+| `ASPIRERADIUS033` | Config (call site) | A Radius resource-group name passed to `WithRadiusResourceGroup` is empty or whitespace. |
+| `ASPIRERADIUS034` | Publish/Deploy gate | A cross-group environment target names a group that has no Radius environment routed to it. Route a `RadiusEnvironmentResource` into that group, or correct the `environmentGroup` argument. |
+| `ASPIRERADIUS035` | Publish/Deploy gate | The group dependency graph (cross-group references ∪ cross-group environment targets) contains a cycle. Break the cycle by removing a cross-group `WithReference` or environment target so the groups form a DAG. |
 
 > `ASPIRERADIUS021` was retired: the cloud is taken from the explicit `RadiusCloud` argument
 > rather than inferred from the recipe location, so there is no cloud/recipe conflict to flag.

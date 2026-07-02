@@ -8,6 +8,7 @@ Provides extensions and resource definitions for an Aspire AppHost to publish an
 
 ### Prerequisites
 
+* **Radius v0.59.0 or later.** This integration is developed and verified against Radius **v0.59.0** and up; the generated Bicep (resource types, `secretStores`, and `recipeConfig`) targets the schemas shipped in that release. Older Radius versions are not supported.
 * A Kubernetes cluster (for example `kind`, `minikube`, AKS) with [Radius](https://docs.radapp.io/installation/) installed.
 * The `rad` CLI on PATH. Version must match the pinned Radius Bicep extension this integration emits (currently `0.59`). Run `rad version` to check.
 * `rad init` has been run against the target cluster so the workspace and environment exist.
@@ -145,6 +146,45 @@ Key behaviours:
 See [specs/007-multi-resource-groups/quickstart.md](../../../specs/007-multi-resource-groups/quickstart.md)
 for an end-to-end walkthrough.
 
+## Secret management
+
+> **Experimental** — the secret-store APIs are gated by `ASPIRERADIUS006`. Suppress the
+> diagnostic (`#pragma warning disable ASPIRERADIUS006`) to opt in.
+
+Declare a Radius secret store (`Applications.Core/secretStores`) and populate it in exactly one
+of three ways:
+
+```csharp
+#pragma warning disable ASPIRERADIUS006
+
+// Inline — Radius-created from Aspire secret parameters (@secure() params, redacted at deploy).
+var user = builder.AddParameter("db-user", secret: true);
+var pass = builder.AddParameter("db-pass", secret: true);
+builder.AddRadiusSecretStore("db-creds", RadiusSecretStoreType.BasicAuthentication)
+       .WithData(d => { d.Add("username", user); d.Add("password", pass); });
+
+// Reference an existing cluster Secret (external operator / hand-applied).
+radius.WithSecretStore("tls-cert", RadiusSecretStoreType.Certificate, s =>
+    s.FromExistingSecret("app/tls-cert", "tls.crt", "tls.key"));
+
+// GitOps sealed secrets — the encrypted manifest is applied before rad deploy and awaited.
+radius.WithSecretStore("db-creds", RadiusSecretStoreType.BasicAuthentication, s =>
+    s.FromSealedSecret("./secrets/db-creds.sealed.yaml", "username", "password"));
+```
+
+- **Scope is implied by the API form**: `builder.AddRadiusSecretStore(...)` is application-scoped
+  (`properties.application`); `radius.WithSecretStore(...)` is environment-scoped
+  (`properties.environment`).
+- **Encoding** defaults to `base64` for `certificate` stores and `raw` otherwise.
+- **Sealed secrets** require `kubectl` on `PATH` and the Bitnami Sealed Secrets controller in the
+  target cluster; the integration applies the already-encrypted manifest (it never runs
+  `kubeseal`) and polls for the materialized `Secret` (default 120s, overridable via
+  `WithMaterializationTimeout`).
+- **Consume** a store from `recipeConfig` auth / `envSecrets` via
+  `WithBicepRegistryAuthentication` / `WithTerraformGitAuthentication` /
+  `WithTerraformProviderSecret` / `WithRecipeEnvironmentSecret`, referenced by the store's
+  fully-qualified UCP secret-store ID.
+
 ## Diagnostics
 
 The package uses the `ASPIRERADIUS` diagnostic prefix for two distinct mechanisms, with
@@ -152,10 +192,11 @@ disjoint numeric ranges reserved so the IDs never collide:
 
 | Range | Mechanism | Surfaced as |
 |-------|-----------|-------------|
-| `ASPIRERADIUS001`–`ASPIRERADIUS009` | Compile-time analyzer diagnostics for experimental APIs (incl. `ASPIRERADIUS005` for `WithRadiusResourceGroup`) | `[Experimental]` warnings (suppressible), documented at `https://aka.ms/aspire/diagnostics/<id>` |
+| `ASPIRERADIUS001`–`ASPIRERADIUS009` | Compile-time analyzer diagnostics for experimental APIs (incl. `ASPIRERADIUS005` for `WithRadiusResourceGroup` and `ASPIRERADIUS006` for the secret-store APIs) | `[Experimental]` warnings (suppressible), documented at `https://aka.ms/aspire/diagnostics/<id>` |
 | `ASPIRERADIUS010`–`ASPIRERADIUS019` | Cloud-provider configuration errors | Thrown `InvalidOperationException` (message includes the ID) |
 | `ASPIRERADIUS020`–`ASPIRERADIUS029` | Cloud-managed resource (`WithManagedResource`) and recipe/recipe-parameter validation | Thrown `ArgumentException` (config time) / `InvalidOperationException` (publish time) |
 | `ASPIRERADIUS030`–`ASPIRERADIUS039` | Multi-resource-group routing (`WithRadiusResourceGroup`) validation | Thrown `ArgumentException` (call site, e.g. empty name) / `InvalidOperationException` (fail-fast gate before publish/deploy) |
+| `ASPIRERADIUS040`–`ASPIRERADIUS048` | Secret-store (`AddRadiusSecretStore` / `WithSecretStore`) validation, publish, and deploy | Thrown `ArgumentException` (call site, e.g. empty/invalid name or key) / `InvalidOperationException` (fail-fast gate, publish, or deploy) |
 
 Runtime validation codes:
 
@@ -180,6 +221,15 @@ Runtime validation codes:
 | `ASPIRERADIUS037` | Publish/Deploy gate | A Radius resource group carries resources but resolves to no environment (neither the group nor its environment group owns one). Route a `RadiusEnvironmentResource` into the group, or target a group that owns one. |
 | `ASPIRERADIUS038` | Publish/Deploy gate | Two Radius resource-group (or environment-group) names differ only by case. Radius resource-group names are case-insensitive, so they would collide server-side. Use a single consistent spelling. |
 | `ASPIRERADIUS039` | Publish/Deploy gate | A legacy resource that declares a custom recipe (a custom recipe location, explicit recipe name, per-instance override, or managed recipe) lives in a group that deploys against an environment owned by another group. Legacy recipes are registered on the environment, so a local custom recipe would be lost. Register the recipe on the environment-owning group, or drop the cross-group environment target. |
+| `ASPIRERADIUS040` | Publish/Deploy gate | A secret store is missing a key its `type` requires (`certificate` needs `tls.crt`/`tls.key`; `basicAuthentication` needs `username`/`password`; `azureWorkloadIdentity` needs `clientId`/`tenantId`; `awsIRSA` needs `roleARN`). |
+| `ASPIRERADIUS041` | Publish/Deploy gate | A secret store declares more than one population mode (`WithData` / `FromExistingSecret` / `FromSealedSecret`) or none. Declare exactly one. |
+| `ASPIRERADIUS042` | Publish/Deploy gate | An inline (`WithData`) secret key is bound to a non-secret `ParameterResource`. Use `builder.AddParameter(name, secret: true)`. |
+| `ASPIRERADIUS043` | Publish/Deploy gate | A secret store declares a duplicate `data` key. (An empty/whitespace key is rejected at the call site with `ArgumentException`.) |
+| `ASPIRERADIUS044` | Publish | A `FromSealedSecret(...)` manifest path does not exist or is unreadable. |
+| `ASPIRERADIUS045` | Deploy | `kubectl` is not on `PATH`, or the Sealed Secrets controller is not installed in the target cluster. |
+| `ASPIRERADIUS046` | Deploy | The `Secret` a sealed store references never materialized within the timeout (controller not installed, wrong namespace from a `strict`-scoped seal, or decryption failure). Surfaced before `rad deploy`. |
+| `ASPIRERADIUS047` | Publish/Deploy gate | An invalid `encoding` was set for the store type (e.g. `raw` on a `certificate` store, which Radius requires to be `base64`). |
+| `ASPIRERADIUS048` | Publish/Deploy gate | Two secret stores map to the same Bicep identifier within the same scope (e.g. `db-creds` and `db.creds` both sanitize to `db_creds`). Rename one so they produce distinct identifiers. |
 
 > `ASPIRERADIUS021` was retired: the cloud is taken from the explicit `RadiusCloud` argument
 > rather than inferred from the recipe location, so there is no cloud/recipe conflict to flag.

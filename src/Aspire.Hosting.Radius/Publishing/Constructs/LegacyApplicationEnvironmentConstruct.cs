@@ -30,6 +30,7 @@ public sealed class LegacyApplicationEnvironmentConstruct : ProvisionableResourc
     private BicepValue<string>? _azureScope;
     private BicepValue<string>? _awsScope;
     private BicepDictionary<BicepDictionary<LegacyRecipeEntryConstruct>>? _recipes;
+    private BicepDictionary<object>? _recipeConfig;
 
     /// <summary>The resource name.</summary>
     public BicepValue<string> EnvironmentName
@@ -86,6 +87,17 @@ public sealed class LegacyApplicationEnvironmentConstruct : ProvisionableResourc
         set { Initialize(); _recipes!.Assign(value); }
     }
 
+    /// <summary>
+    /// The <c>recipeConfig</c> block (<c>properties.recipeConfig</c>) carrying secret-store
+    /// references for private Bicep-registry auth, Terraform Git PAT auth, and
+    /// <c>envSecrets</c>. Populated only when a secret store is consumed (FR-012).
+    /// </summary>
+    public BicepDictionary<object> RecipeConfig
+    {
+        get { Initialize(); return _recipeConfig!; }
+        set { Initialize(); _recipeConfig!.Assign(value); }
+    }
+
     /// <summary>Initializes a new <see cref="LegacyApplicationEnvironmentConstruct"/> with the given Bicep identifier.</summary>
     public LegacyApplicationEnvironmentConstruct(string bicepIdentifier)
         : base(bicepIdentifier, new Azure.Core.ResourceType("Applications.Core/environments"), "2023-10-01-preview")
@@ -102,5 +114,6 @@ public sealed class LegacyApplicationEnvironmentConstruct : ProvisionableResourc
         _awsScope = DefineProperty<string>(nameof(AwsScope), ["properties", "providers", "aws", "scope"]);
         _recipes = DefineDictionaryProperty<BicepDictionary<LegacyRecipeEntryConstruct>>(
             nameof(Recipes), ["properties", "recipes"]);
+        _recipeConfig = DefineDictionaryProperty<object>(nameof(RecipeConfig), ["properties", "recipeConfig"]);
     }
 }

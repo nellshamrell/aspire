@@ -73,6 +73,19 @@ public sealed class RadiusInfrastructureOptions
     public List<LegacyContainerConstruct> LegacyContainers { get; } = [];
 
     /// <summary>
+    /// Gets the list of <c>Applications.Core/secretStores</c> constructs emitted for the
+    /// Radius secret stores declared via <c>AddRadiusSecretStore</c> / <c>WithSecretStore</c>.
+    /// </summary>
+    public List<RadiusSecretStoreConstruct> SecretStores { get; } = [];
+
+    /// <summary>
+    /// Gets the file paths of committed <c>SealedSecret</c> manifests referenced by sealed
+    /// secret stores in this scope. The publish step copies each alongside the emitted
+    /// <c>app.bicep</c> so the artifact is self-contained (the manifest is already encrypted).
+    /// </summary>
+    internal List<string> SealedSecretManifestPaths { get; } = [];
+
+    /// <summary>
     /// Gets the Bicep <c>param</c> declarations referenced by recipe parameters that
     /// are bound to an Aspire <c>ParameterResource</c>. Keyed by parameter name so a
     /// parameter referenced by multiple recipe entries is declared once. These are

@@ -10,7 +10,11 @@ using System.Diagnostics;
 using System.Text;
 using Aspire.Hosting.ApplicationModel;
 using Aspire.Hosting.Pipelines;
+using Aspire.Hosting.Radius.ResourceGroups;
+using Aspire.Hosting.Radius.ResourceMapping;
 using Aspire.Hosting.Radius.Secrets;
+using Aspire.Hosting.Utils;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 namespace Aspire.Hosting.Radius.Publishing;
@@ -48,7 +52,26 @@ internal sealed class SealedSecretApplyStep
 
     internal async Task ExecuteAsync(PipelineStepContext context)
     {
-        var stores = GetSealedStores(context.Model);
+        var model = context.Model;
+
+        // Grouped mode: the primary emitter owns every group's deploy (mirroring the publish and
+        // deploy steps), so only it applies sealed secrets — once per emitted store, resolving the
+        // store's artifact from its group's output directory and using that group's namespace.
+        // Non-primary environments defer, so no store is applied more than once or into the wrong
+        // namespace. The primary apply step is already RequiredBy the primary grouped deploy step,
+        // so the dependency edge that gates apply-before-deploy is preserved without extra wiring.
+        if (RadiusGroupOrchestrator.IsRoutingActive(model))
+        {
+            if (!IsPrimaryGroupEmitter(model))
+            {
+                return;
+            }
+
+            await ExecuteGroupedAsync(context).ConfigureAwait(false);
+            return;
+        }
+
+        var stores = GetSealedStores(model);
         if (stores.Count == 0)
         {
             return;
@@ -57,28 +80,149 @@ internal sealed class SealedSecretApplyStep
         var logger = context.Logger;
         var cancellationToken = context.CancellationToken;
 
+        await EnsureKubectlAsync(cancellationToken).ConfigureAwait(false);
+
+        var kubeContext = await ResolveWorkspaceKubeContextAsync(cancellationToken).ConfigureAwait(false);
+
+        // Same-run publish copies each manifest under the environment output directory; deploy
+        // prefers that self-contained artifact and falls back to the author-provided source path.
+        var outputDir = PublishingContextUtils.GetEnvironmentOutputPath(context, _environment);
+
+        foreach (var store in stores)
+        {
+            await ApplyStoreAsync(
+                store, outputDir, store.Population.SealedManifestPath!, _environment.Namespace,
+                kubeContext, logger, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    // Applies every sealed store emitted by the grouped publish, exactly once, resolving each
+    // store's artifact from the group directory it was emitted into and using that group's
+    // environment namespace. Reuses the same per-group build the grouped publish/deploy uses, so
+    // the set of applied stores and their artifact paths are guaranteed consistent with the
+    // emitted Bicep (a store is emitted into exactly one group's scope).
+    private static async Task ExecuteGroupedAsync(PipelineStepContext context)
+    {
+        var model = context.Model;
+        var logger = context.Logger;
+        var cancellationToken = context.CancellationToken;
+
+        var storesByName = model.Resources.OfType<RadiusSecretStoreResource>()
+            .Where(static s => s.Population.HasSealedSecret)
+            .ToDictionary(static s => s.Name, StringComparer.Ordinal);
+        if (storesByName.Count == 0)
+        {
+            return;
+        }
+
+        await EnsureKubectlAsync(cancellationToken).ConfigureAwait(false);
+
+        var kubeContext = await ResolveWorkspaceKubeContextAsync(cancellationToken).ConfigureAwait(false);
+
+        var rootOutputDir = context.Services
+            .GetRequiredService<IPipelineOutputService>()
+            .GetOutputDirectory();
+
+        var orchestrator = RadiusGroupOrchestrator.Create(model);
+        var typeMapper = new ResourceTypeMapper(logger);
+        var partitionByGroup = orchestrator.Partitions.ToDictionary(static p => p.Group, StringComparer.Ordinal);
+
+        foreach (var group in orchestrator.DeployOrder)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (!partitionByGroup.TryGetValue(group, out var partition))
+            {
+                continue;
+            }
+
+            var resolved = RadiusBicepPublishingContext.ResolveGroupBuild(orchestrator, partition);
+            if (resolved is not { } build)
+            {
+                continue;
+            }
+
+            var (environment, groupContext) = build;
+
+            // Re-run the group's build to learn exactly which sealed stores it emitted (and their
+            // source manifest paths), matching the grouped publish byte-for-byte.
+            var builder = new RadiusInfrastructureBuilder(environment, model, typeMapper, logger, groupContext);
+            var options = await builder.BuildAsync(context.ExecutionContext, cancellationToken).ConfigureAwait(false);
+            if (options.SealedSecretManifestPaths.Count == 0)
+            {
+                continue;
+            }
+
+            var groupOutputDir = Path.Combine(rootOutputDir, "groups", group);
+            foreach (var (storeName, sourcePath) in options.SealedSecretManifestPaths)
+            {
+                if (!storesByName.TryGetValue(storeName, out var store))
+                {
+                    continue;
+                }
+
+                await ApplyStoreAsync(
+                    store, groupOutputDir, sourcePath, environment.Namespace,
+                    kubeContext, logger, cancellationToken).ConfigureAwait(false);
+            }
+        }
+    }
+
+    // Resolves the store's manifest (published artifact preferred, source path fallback), reads its
+    // identifying metadata, applies it, then waits for the underlying Secret to materialize. The
+    // resolved path is used for BOTH the metadata read and the apply so a cross-machine deploy that
+    // relies on the self-contained artifact never touches the (possibly absent) author source path.
+    private static async Task ApplyStoreAsync(
+        RadiusSecretStoreResource store,
+        string storeOutputDir,
+        string sourceManifestPath,
+        string defaultNamespace,
+        string? kubeContext,
+        ILogger logger,
+        CancellationToken cancellationToken)
+    {
+        var manifestPath = ResolveManifestPath(storeOutputDir, store.Name, sourceManifestPath);
+
+        var metadata = SealedSecretManifest.ReadMetadata(store.Name, manifestPath, defaultNamespace);
+
+        // Pass -n only when the manifest omitted metadata.namespace: `kubectl apply -n X` fails when
+        // the object already declares a different namespace, but when the manifest is namespace-less
+        // apply would otherwise land in the kube-context's default namespace while the poll below
+        // checks the resolved namespace — so they must be pinned to the same value.
+        var applyNamespace = metadata.NamespaceWasExplicit ? null : metadata.Namespace;
+
+        await ApplyManifestAsync(manifestPath, applyNamespace, kubeContext, logger, cancellationToken)
+            .ConfigureAwait(false);
+
+        await WaitForSecretMaterializationAsync(
+            store.Name, metadata.Namespace, metadata.Name, store.MaterializationTimeout, s_pollInterval,
+            ct => SecretExistsAsync(metadata.Namespace, metadata.Name, kubeContext, ct),
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    // Prefers the self-contained published artifact (sealed-secrets/<store>/<file> under the
+    // emitted app.bicep) so publish-then-deploy across machines works; falls back to the author
+    // source path for the in-place same-run case.
+    private static string ResolveManifestPath(string storeOutputDir, string storeName, string sourceManifestPath)
+    {
+        var artifact = SealedSecretArtifact.ResolvePath(storeOutputDir, storeName, sourceManifestPath);
+        return File.Exists(artifact) ? artifact : sourceManifestPath;
+    }
+
+    private static async Task EnsureKubectlAsync(CancellationToken cancellationToken)
+    {
         if (!await DetectKubectlAsync(cancellationToken).ConfigureAwait(false))
         {
             throw new InvalidOperationException(
                 "'kubectl' was not found on PATH, or the Sealed Secrets controller is not installed in the " +
                 "target cluster. Install kubectl and the controller, then re-run deploy. Diagnostic: ASPIRERADIUS045.");
         }
+    }
 
-        var kubeContext = await ResolveWorkspaceKubeContextAsync(cancellationToken).ConfigureAwait(false);
-
-        foreach (var store in stores)
-        {
-            var (ns, name) = SealedSecretManifest.ReadMetadata(
-                store.Name, store.Population.SealedManifestPath!, _environment.Namespace);
-
-            await ApplyManifestAsync(store.Population.SealedManifestPath!, kubeContext, logger, cancellationToken)
-                .ConfigureAwait(false);
-
-            await WaitForSecretMaterializationAsync(
-                store.Name, ns, name, store.MaterializationTimeout, s_pollInterval,
-                ct => SecretExistsAsync(ns, name, kubeContext, ct),
-                cancellationToken).ConfigureAwait(false);
-        }
+    private bool IsPrimaryGroupEmitter(DistributedApplicationModel model)
+    {
+        var primary = model.Resources.OfType<RadiusEnvironmentResource>().FirstOrDefault();
+        return ReferenceEquals(primary, _environment);
     }
 
     /// <summary>Sealed secret stores scoped to this environment (environment-scoped owned here, plus application-scoped).</summary>
@@ -88,10 +232,15 @@ internal sealed class SealedSecretApplyStep
             .Where(s => s.Scope == RadiusSecretStoreScope.Application || ReferenceEquals(s.OwningEnvironment, _environment))
             .ToList();
 
-    /// <summary>Builds the <c>kubectl apply</c> argument list, passing <c>--context</c> only when resolved.</summary>
-    internal static IReadOnlyList<string> BuildApplyArgs(string manifestPath, string? kubeContext)
+    /// <summary>Builds the <c>kubectl apply</c> argument list, passing <c>-n</c> and <c>--context</c> only when supplied.</summary>
+    internal static IReadOnlyList<string> BuildApplyArgs(string manifestPath, string? kubeContext, string? @namespace = null)
     {
         var args = new List<string> { "apply", "-f", manifestPath };
+        if (!string.IsNullOrWhiteSpace(@namespace))
+        {
+            args.Add("-n");
+            args.Add(@namespace);
+        }
         AddContext(args, kubeContext);
         return args;
     }
@@ -148,9 +297,9 @@ internal sealed class SealedSecretApplyStep
         }
     }
 
-    private static async Task ApplyManifestAsync(string manifestPath, string? kubeContext, ILogger logger, CancellationToken cancellationToken)
+    private static async Task ApplyManifestAsync(string manifestPath, string? @namespace, string? kubeContext, ILogger logger, CancellationToken cancellationToken)
     {
-        var args = BuildApplyArgs(manifestPath, kubeContext);
+        var args = BuildApplyArgs(manifestPath, kubeContext, @namespace);
         var (exitCode, stderr) = await RunKubectlAsync(args, logger, cancellationToken).ConfigureAwait(false);
         if (exitCode != 0)
         {
@@ -181,14 +330,120 @@ internal sealed class SealedSecretApplyStep
             }
 
             var text = await File.ReadAllTextAsync(configPath, cancellationToken).ConfigureAwait(false);
-            var match = System.Text.RegularExpressions.Regex.Match(
-                text, @"(?m)^\s*context:\s*(?<v>[^\s#]+)\s*$");
-            return match.Success ? match.Groups["v"].Value.Trim('\'', '"') : null;
+            return ParseActiveWorkspaceContext(text);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             return null;
         }
+    }
+
+    // Selects the kubecontext of the *default* (active) rad workspace, not merely the first
+    // `context:` in the file — a machine with several workspaces would otherwise pick the wrong
+    // cluster. The rad config (~/.rad/config.yaml) is nested YAML shaped like:
+    //   workspaces:
+    //     default: kind-radius
+    //     items:
+    //       kind-radius:
+    //         connection:
+    //           kind: kubernetes
+    //           context: kind-radius
+    //       other:
+    //         connection:
+    //           context: other-ctx
+    // We read workspaces.default, then workspaces.items.<default>.connection.context. If the
+    // default selector is absent (older/single-workspace configs), we fall back to the first
+    // `context:` occurrence. Best-effort and dependency-free: any miss returns null and the caller
+    // lets kubectl use its ambient current-context.
+    internal static string? ParseActiveWorkspaceContext(string text)
+    {
+        var lines = text.Replace("\r\n", "\n").Split('\n');
+
+        var defaultWorkspace = FindNestedScalar(lines, ["workspaces", "default"]);
+        if (!string.IsNullOrEmpty(defaultWorkspace))
+        {
+            var context = FindNestedScalar(lines, ["workspaces", "items", defaultWorkspace, "connection", "context"]);
+            if (!string.IsNullOrEmpty(context))
+            {
+                return context;
+            }
+        }
+
+        // Fallback: first `context:` anywhere (single-workspace configs without a default selector).
+        var match = System.Text.RegularExpressions.Regex.Match(
+            text, @"(?m)^\s*context:\s*(?<v>[^\s#]+)\s*$");
+        return match.Success ? match.Groups["v"].Value.Trim('\'', '"') : null;
+    }
+
+    // Walks an indentation-nested mapping following <paramref name="path"/> key-by-key, returning
+    // the scalar value of the final key. Descends only through exact key matches at strictly deeper
+    // indentation than the matched parent, and bails out when the parent block ends (a line at or
+    // below the parent's indentation), so sibling subtrees can never be mistaken for the target.
+    private static string? FindNestedScalar(IReadOnlyList<string> lines, IReadOnlyList<string> path)
+    {
+        var level = 0;
+        var parentIndent = -1;
+
+        foreach (var raw in lines)
+        {
+            var (indent, key, value) = ParseKeyLine(raw);
+            if (key is null)
+            {
+                continue;
+            }
+
+            if (level > 0 && indent <= parentIndent)
+            {
+                // Left the current parent's block before finding the next key in the path.
+                return null;
+            }
+
+            if (indent > parentIndent && string.Equals(key, path[level], StringComparison.Ordinal))
+            {
+                if (level == path.Count - 1)
+                {
+                    return string.IsNullOrEmpty(value) ? null : value;
+                }
+
+                parentIndent = indent;
+                level++;
+            }
+        }
+
+        return null;
+    }
+
+    // Parses a single YAML line into (indentation, key, scalar value). Returns a null key for blank
+    // lines, comments, and non-`key: value` lines (e.g. list items). Quotes around the value are
+    // stripped; inline comments are not stripped (workspace/context values do not contain '#').
+    private static (int Indent, string? Key, string Value) ParseKeyLine(string raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return (0, null, string.Empty);
+        }
+
+        var indent = 0;
+        while (indent < raw.Length && (raw[indent] == ' ' || raw[indent] == '\t'))
+        {
+            indent++;
+        }
+
+        var trimmed = raw[indent..];
+        if (trimmed.StartsWith('#'))
+        {
+            return (indent, null, string.Empty);
+        }
+
+        var colon = trimmed.IndexOf(':');
+        if (colon < 0)
+        {
+            return (indent, null, string.Empty);
+        }
+
+        var key = trimmed[..colon].Trim();
+        var value = trimmed[(colon + 1)..].Trim().Trim('\'', '"');
+        return (indent, key, value);
     }
 
     private static async Task<bool> DetectKubectlAsync(CancellationToken cancellationToken)

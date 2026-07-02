@@ -24,6 +24,68 @@ public class SealedSecretApplyStepTests
     }
 
     [Fact]
+    public void BuildApplyArgs_WithNamespace_PassesNamespaceExplicitly()
+    {
+        var args = SealedSecretApplyStep.BuildApplyArgs("/p/db.sealed.yaml", "kind-radius", "app");
+        Assert.Equal(new[] { "apply", "-f", "/p/db.sealed.yaml", "-n", "app", "--context", "kind-radius" }, args);
+    }
+
+    [Fact]
+    public void BuildApplyArgs_NamespaceWithoutContext_PassesNamespaceOnly()
+    {
+        var args = SealedSecretApplyStep.BuildApplyArgs("/p/db.sealed.yaml", null, "app");
+        Assert.Equal(new[] { "apply", "-f", "/p/db.sealed.yaml", "-n", "app" }, args);
+    }
+
+    [Fact]
+    public void ParseActiveWorkspaceContext_SelectsDefaultWorkspaceContext()
+    {
+        // With multiple workspaces, the default workspace's context must be selected — not the
+        // first `context:` in the file (which belongs to a non-default workspace here).
+        var config =
+            "workspaces:\n" +
+            "  default: prod\n" +
+            "  items:\n" +
+            "    dev:\n" +
+            "      connection:\n" +
+            "        kind: kubernetes\n" +
+            "        context: dev-cluster\n" +
+            "    prod:\n" +
+            "      connection:\n" +
+            "        kind: kubernetes\n" +
+            "        context: prod-cluster\n";
+
+        Assert.Equal("prod-cluster", SealedSecretApplyStep.ParseActiveWorkspaceContext(config));
+    }
+
+    [Fact]
+    public void ParseActiveWorkspaceContext_NoDefault_FallsBackToFirstContext()
+    {
+        var config =
+            "workspaces:\n" +
+            "  items:\n" +
+            "    only:\n" +
+            "      connection:\n" +
+            "        context: only-cluster\n";
+
+        Assert.Equal("only-cluster", SealedSecretApplyStep.ParseActiveWorkspaceContext(config));
+    }
+
+    [Fact]
+    public void ParseActiveWorkspaceContext_NoContext_ReturnsNull()
+    {
+        var config =
+            "workspaces:\n" +
+            "  default: prod\n" +
+            "  items:\n" +
+            "    prod:\n" +
+            "      connection:\n" +
+            "        kind: kubernetes\n";
+
+        Assert.Null(SealedSecretApplyStep.ParseActiveWorkspaceContext(config));
+    }
+
+    [Fact]
     public void BuildGetSecretArgs_TargetsNamespaceAndContext()
     {
         var args = SealedSecretApplyStep.BuildGetSecretArgs("app", "db-creds", "kind-radius");

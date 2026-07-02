@@ -1200,7 +1200,7 @@ internal sealed class RadiusInfrastructureBuilder
 
             if (store.Population.HasSealedSecret)
             {
-                options.SealedSecretManifestPaths.Add(store.Population.SealedManifestPath!);
+                options.SealedSecretManifestPaths[store.Name] = store.Population.SealedManifestPath!;
             }
 
             storeConstructs[store.Name] = construct;
@@ -1375,8 +1375,8 @@ internal sealed class RadiusInfrastructureBuilder
         // unreadable manifest fails publish with ASPIRERADIUS044.
         if (population.HasSealedSecret)
         {
-            var (ns, name) = SealedSecretManifest.ReadMetadata(store.Name, population.SealedManifestPath!, defaultNamespace);
-            return $"{ns}/{name}";
+            var metadata = SealedSecretManifest.ReadMetadata(store.Name, population.SealedManifestPath!, defaultNamespace);
+            return $"{metadata.Namespace}/{metadata.Name}";
         }
 
         var reference = population.ResourceReference!;

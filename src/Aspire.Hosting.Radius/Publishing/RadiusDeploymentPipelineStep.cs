@@ -332,22 +332,26 @@ internal sealed class RadiusDeploymentPipelineStep
     }
 
     /// <summary>
-    /// A single group's planned <c>rad</c> invocations: an idempotent <c>rad group create</c>
-    /// followed by exactly one <c>rad deploy</c> (FR-010, FR-012), plus the secret parameter values
-    /// to redact from logs (FR-013, SC-008).
+    /// A single group's planned <c>rad</c> invocations: an idempotent <c>rad group create</c>, an
+    /// idempotent <c>rad env create</c> when the group owns its environment (empty otherwise), then
+    /// exactly one <c>rad deploy</c> (FR-010, FR-012), plus the secret parameter values to redact
+    /// from logs (FR-013, SC-008).
     /// </summary>
     internal sealed record RadGroupDeployCommand(
         string Group,
         IReadOnlyList<string> GroupCreateArguments,
+        IReadOnlyList<string> EnvCreateArguments,
         IReadOnlyList<string> DeployArguments,
         IReadOnlyList<string> SecretValues);
 
     /// <summary>
     /// Plans the per-group <c>rad</c> invocations for a multi-group deploy: one entry per group in
     /// topological deploy order (dependencies first, SC-002). Each entry issues an idempotent
-    /// <c>rad group create</c> then a single <c>rad deploy groups/&lt;group&gt;/app.bicep</c> with
-    /// explicit <c>--group</c>, the inert first-declared (or cross-group UCP) <c>--environment</c>,
-    /// the shared <c>--application</c>, an optional <c>--workspace</c>, and this group's resolved
+    /// <c>rad group create</c>, an idempotent <c>rad env create</c> for the group's own environment
+    /// (skipped when the group borrows another group's environment), then a single
+    /// <c>rad deploy groups/&lt;group&gt;/app.bicep</c> with explicit <c>--group</c>, the
+    /// inert first-declared (or cross-group UCP) <c>--environment</c>, the shared
+    /// <c>--application</c>, an optional <c>--workspace</c>, and this group's resolved
     /// <c>--parameters</c> (FR-009 – FR-013). Pure planning: no processes are launched.
     /// </summary>
     internal static async Task<IReadOnlyList<RadGroupDeployCommand>> PlanGroupDeployAsync(
@@ -402,6 +406,40 @@ internal sealed class RadiusDeploymentPipelineStep
                 groupCreateArgs.Add(workspace);
             }
 
+            // A group that owns its environment must have that environment pre-created before
+            // `rad deploy`: `rad deploy --environment <name>` requires the named environment to
+            // already exist as the deployment scope, even though the group's own Bicep (re)defines
+            // it (chicken-and-egg). This idempotent stub breaks the cycle; the group's Bicep then
+            // upserts the real environment (recipe packs / providers). Groups that borrow another
+            // group's environment (CrossGroupEnvironmentId != null) skip this: that environment is
+            // owned and created by a different group that deploys earlier in topological order.
+            var envCreateArgs = new List<string>();
+            if (groupContext.CrossGroupEnvironmentId is null)
+            {
+                envCreateArgs.Add("env");
+                envCreateArgs.Add("create");
+                envCreateArgs.Add(environment.Name);
+                envCreateArgs.Add("-g");
+                envCreateArgs.Add(group);
+                // Match the Bicep environment's KubernetesNamespace so the stub and the upsert agree.
+                envCreateArgs.Add("--kubernetes-namespace");
+                envCreateArgs.Add(environment.Namespace);
+                // Match the *provider* the group's Bicep emits: native Radius.Core/environments
+                // (--preview) when the group has UDT resources or UDT-bound compute, otherwise the
+                // legacy Applications.Core/environments. Creating the stub in the wrong provider
+                // leaves the same-named environment in both providers, which makes `rad deploy`
+                // fail with an ambiguous-environment conflict on idempotent re-runs (FR-014).
+                if (options.Environments.Count > 0)
+                {
+                    envCreateArgs.Add("--preview");
+                }
+                if (!string.IsNullOrEmpty(workspace))
+                {
+                    envCreateArgs.Add("-w");
+                    envCreateArgs.Add(workspace);
+                }
+            }
+
             var deployArgs = new List<string>
             {
                 "deploy",
@@ -417,7 +455,7 @@ internal sealed class RadiusDeploymentPipelineStep
             }
             deployArgs.AddRange(parameterArgs);
 
-            commands.Add(new RadGroupDeployCommand(group, groupCreateArgs, deployArgs, secretValues));
+            commands.Add(new RadGroupDeployCommand(group, groupCreateArgs, envCreateArgs, deployArgs, secretValues));
         }
 
         return commands;
@@ -464,8 +502,23 @@ internal sealed class RadiusDeploymentPipelineStep
                 Array.Empty<string>(),
                 $"Ensuring Radius resource group '{command.Group}' exists...",
                 $"Radius resource group '{command.Group}' ready",
-                treatAlreadyExistsAsSuccess: true,
+                AlreadyExistsScope.Group,
                 context).ConfigureAwait(false);
+
+            // Idempotent environment create for groups that own their environment — a pre-existing
+            // environment is treated as success. Skipped (empty) for groups that borrow another
+            // group's environment.
+            if (command.EnvCreateArguments.Count > 0)
+            {
+                await RunRadProcessAsync(
+                    rootOutputDir,
+                    command.EnvCreateArguments,
+                    Array.Empty<string>(),
+                    $"Ensuring Radius environment exists for group '{command.Group}'...",
+                    $"Radius environment ready for group '{command.Group}'",
+                    AlreadyExistsScope.Environment,
+                    context).ConfigureAwait(false);
+            }
 
             // Exactly one rad deploy per group (FR-012).
             await RunRadProcessAsync(
@@ -474,16 +527,28 @@ internal sealed class RadiusDeploymentPipelineStep
                 command.SecretValues,
                 $"Deploying Radius resource group '{command.Group}' via rad deploy...",
                 $"Radius deployment complete for group '{command.Group}'",
-                treatAlreadyExistsAsSuccess: false,
+                AlreadyExistsScope.None,
                 context).ConfigureAwait(false);
         }
     }
 
     /// <summary>
+    /// Identifies which idempotent "already exists" outcome a <c>rad</c> invocation may treat as
+    /// success. <see cref="Group"/> and <see cref="Environment"/> map to <c>rad group create</c> and
+    /// <c>rad env create</c>; <see cref="None"/> (e.g. <c>rad deploy</c>) never swallows failures.
+    /// </summary>
+    private enum AlreadyExistsScope
+    {
+        None,
+        Group,
+        Environment,
+    }
+
+    /// <summary>
     /// Runs a single <c>rad</c> invocation, streaming redacted stdout/stderr to the logger and the
     /// reporting step. Throws <see cref="InvalidOperationException"/> on a non-zero exit unless
-    /// <paramref name="treatAlreadyExistsAsSuccess"/> is set and the failure is an already-exists
-    /// group create (FR-010, FR-014).
+    /// <paramref name="alreadyExistsScope"/> is not <see cref="AlreadyExistsScope.None"/> and the
+    /// failure is an already-exists create for that scope (FR-010, FR-014).
     /// </summary>
     private static async Task RunRadProcessAsync(
         string workingDirectory,
@@ -491,7 +556,7 @@ internal sealed class RadiusDeploymentPipelineStep
         IReadOnlyList<string> secretValues,
         string taskDescription,
         string completionDescription,
-        bool treatAlreadyExistsAsSuccess,
+        AlreadyExistsScope alreadyExistsScope,
         PipelineStepContext context)
     {
         var cancellationToken = context.CancellationToken;
@@ -502,6 +567,7 @@ internal sealed class RadiusDeploymentPipelineStep
         try
         {
             var stderrBuilder = new System.Text.StringBuilder();
+            var stdoutBuilder = new System.Text.StringBuilder();
 
             using var process = new Process();
             process.StartInfo = new ProcessStartInfo
@@ -527,6 +593,7 @@ internal sealed class RadiusDeploymentPipelineStep
                 if (e.Data is not null)
                 {
                     var redacted = RadCredentialRegisterStep.RedactSecretValues(e.Data, secretValues);
+                    stdoutBuilder.AppendLine(redacted);
                     logger.LogInformation("rad (stdout): {Output}", redacted);
                     context.ReportingStep.Log(LogLevel.Information, redacted);
                 }
@@ -573,13 +640,22 @@ internal sealed class RadiusDeploymentPipelineStep
             {
                 var stderrText = stderrBuilder.ToString().Trim();
 
-                // Idempotent group create: an already-existing group is a success, not a failure.
-                if (treatAlreadyExistsAsSuccess &&
-                    stderrText.Contains("already exists", StringComparison.OrdinalIgnoreCase))
+                // Idempotent create: an already-existing group/environment is a success, not a
+                // failure. `rad` may report the "already exists" notice on either stream, so check
+                // both. Scoped so a `rad deploy` (None) never swallows an unrelated failure that
+                // merely mentions "already exists".
+                if (alreadyExistsScope != AlreadyExistsScope.None)
                 {
-                    logger.LogInformation("Radius resource group already exists — treating as success.");
-                    await task.CompleteAsync(completionDescription, cancellationToken: cancellationToken).ConfigureAwait(false);
-                    return;
+                    var combinedOutput = $"{stdoutBuilder}\n{stderrText}";
+                    if (combinedOutput.Contains("already exists", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var scopeLabel = alreadyExistsScope == AlreadyExistsScope.Group
+                            ? "resource group"
+                            : "environment";
+                        logger.LogInformation("Radius {ScopeLabel} already exists — treating as success.", scopeLabel);
+                        await task.CompleteAsync(completionDescription, cancellationToken: cancellationToken).ConfigureAwait(false);
+                        return;
+                    }
                 }
 
                 var errorMessage = string.IsNullOrEmpty(stderrText)

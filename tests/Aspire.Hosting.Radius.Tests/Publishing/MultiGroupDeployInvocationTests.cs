@@ -61,6 +61,10 @@ public class MultiGroupDeployInvocationTests
 
         var shared = commands[0];
         Assert.Equal(new[] { "group", "create", "shared-data" }, shared.GroupCreateArguments);
+        // shared-data owns env-shared, so its environment is pre-created (default namespace).
+        Assert.Equal(
+            new[] { "env", "create", "env-shared", "-g", "shared-data", "--kubernetes-namespace", "default" },
+            shared.EnvCreateArguments);
         Assert.Equal(
             new[]
             {
@@ -74,6 +78,11 @@ public class MultiGroupDeployInvocationTests
 
         var orders = commands[1];
         Assert.Equal(new[] { "group", "create", "orders" }, orders.GroupCreateArguments);
+        // orders has a container (native compute) → its Bicep emits a native Radius.Core
+        // environment, so the pre-created stub must be native too (--preview).
+        Assert.Equal(
+            new[] { "env", "create", "env-orders", "-g", "orders", "--kubernetes-namespace", "default", "--preview" },
+            orders.EnvCreateArguments);
         // The fixed flags lead the deploy command; a cross-group reference may append
         // additional --parameters (e.g. the referenced db's secret), which is asserted separately.
         Assert.Equal(
@@ -90,6 +99,7 @@ public class MultiGroupDeployInvocationTests
         // No workspace configured → no --workspace / -w on any command.
         Assert.All(commands, c => Assert.DoesNotContain("--workspace", c.DeployArguments));
         Assert.All(commands, c => Assert.DoesNotContain("-w", c.GroupCreateArguments));
+        Assert.All(commands, c => Assert.DoesNotContain("-w", c.EnvCreateArguments));
     }
 
     [Fact]
@@ -107,11 +117,46 @@ public class MultiGroupDeployInvocationTests
 
         var commands = await PlanAsync(model);
 
+        // platform owns env-platform → env-create planned; orders borrows it → no env-create.
+        var platform = Assert.Single(commands, c => c.Group == "platform");
+        Assert.Equal(
+            new[] { "env", "create", "env-platform", "-g", "platform", "--kubernetes-namespace", "default" },
+            platform.EnvCreateArguments);
+
         var orders = Assert.Single(commands, c => c.Group == "orders");
+        Assert.Empty(orders.EnvCreateArguments);
         var envIndex = orders.DeployArguments.ToList().IndexOf("--environment") + 1;
         Assert.Equal(
             "/planes/radius/local/resourceGroups/platform/providers/Applications.Core/environments/env-platform",
             orders.DeployArguments[envIndex]);
+    }
+
+    [Fact]
+    public async Task EnvOnlyOwnerGroup_StillGetsEnvCreate_BeforeBorrowingGroupDeploys()
+    {
+        // Regression for the partition-skip edge: `platform` carries ONLY its environment (no other
+        // resources), while `orders` borrows it. The owning group must still deploy first and
+        // pre-create its environment so the borrowing group's cross-group --environment resolves.
+        var model = BuildModel(b =>
+        {
+            b.AddRadiusEnvironment("env-platform").WithRadiusResourceGroup("platform");
+
+            b.AddContainer("api", "img", "latest")
+                .WithRadiusResourceGroup("orders", environmentGroup: "platform");
+        });
+
+        var commands = await PlanAsync(model);
+
+        // platform deploys before orders (cross-group environment edge).
+        Assert.Equal(new[] { "platform", "orders" }, commands.Select(c => c.Group).ToArray());
+
+        var platform = commands[0];
+        Assert.Equal(
+            new[] { "env", "create", "env-platform", "-g", "platform", "--kubernetes-namespace", "default" },
+            platform.EnvCreateArguments);
+
+        var orders = commands[1];
+        Assert.Empty(orders.EnvCreateArguments);
     }
 
     [Fact]
@@ -154,8 +199,31 @@ public class MultiGroupDeployInvocationTests
         var orders = Assert.Single(commands);
 
         Assert.Equal(new[] { "group", "create", "orders", "-w", "my-ws" }, orders.GroupCreateArguments);
+        // orders owns env-orders (native, has a container) → env-create carries --preview and the workspace.
+        Assert.Equal(
+            new[] { "env", "create", "env-orders", "-g", "orders", "--kubernetes-namespace", "default", "--preview", "-w", "my-ws" },
+            orders.EnvCreateArguments);
         Assert.Contains("--workspace", orders.DeployArguments);
         var wsIndex = orders.DeployArguments.ToList().IndexOf("--workspace") + 1;
         Assert.Equal("my-ws", orders.DeployArguments[wsIndex]);
+    }
+
+    [Fact]
+    public async Task EnvCreate_UsesConfiguredKubernetesNamespace()
+    {
+        var model = BuildModel(b =>
+        {
+            b.AddRadiusEnvironment("env-orders")
+                .WithNamespace("orders-ns")
+                .WithRadiusResourceGroup("orders");
+            b.AddContainer("api", "img", "latest").WithRadiusResourceGroup("orders");
+        });
+
+        var commands = await PlanAsync(model);
+        var orders = Assert.Single(commands);
+
+        Assert.Equal(
+            new[] { "env", "create", "env-orders", "-g", "orders", "--kubernetes-namespace", "orders-ns", "--preview" },
+            orders.EnvCreateArguments);
     }
 }

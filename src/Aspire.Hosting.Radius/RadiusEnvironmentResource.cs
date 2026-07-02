@@ -9,6 +9,7 @@ using Aspire.Hosting.ApplicationModel;
 using Aspire.Hosting.Pipelines;
 using Aspire.Hosting.Radius.Publishing;
 using Aspire.Hosting.Radius.ResourceGroups;
+using Aspire.Hosting.Radius.Secrets;
 
 namespace Aspire.Hosting.Radius;
 
@@ -67,6 +68,25 @@ public sealed class RadiusEnvironmentResource : Resource, IComputeEnvironmentRes
                 RequiredBySteps = [publishStep.Name, deployStep.Name],
             };
 
+            // Fail-fast Radius secret-store validation gate: RequiredBy this environment's
+            // publish and deploy steps so type/mode/key/encoding/duplicate-name failures
+            // surface before any Bicep is emitted or kubectl/rad is contacted (FR-005,
+            // FR-005a, FR-013). It is a no-op when the model declares no secret stores,
+            // keeping the default path unchanged.
+            var validateSecretStoresStep = new PipelineStep
+            {
+                Name = $"validate-radius-secret-stores-{Name}",
+                Description = $"Validates Radius secret stores for {Name}.",
+                Action = RadiusSecretStoreValidation.ValidateAsync,
+                RequiredBySteps = [publishStep.Name, deployStep.Name],
+            };
+
+            // Sealed-secrets apply/wait gate: applies each SealedSecret manifest to the workspace's
+            // cluster and waits for the underlying Secret to materialize before rad deploy. Scheduled
+            // after publish and RequiredBy deploy; a no-op when no sealed store is declared (FR-008,
+            // FR-009, FR-010).
+            var applySealedSecretsStep = new SealedSecretApplyStep(this).CreatePipelineStep();
+
             // Only schedule the credential-register step when the environment
             // has cloud-provider configuration attached. Apps without the new
             // WithAzure/WithAws extensions emit byte-identical pipelines.
@@ -76,10 +96,10 @@ public sealed class RadiusEnvironmentResource : Resource, IComputeEnvironmentRes
             if (hasCloudProviders)
             {
                 var registerStep = new RadCredentialRegisterStep(this).CreatePipelineStep();
-                return [validateGroupsStep, prepareStep, publishStep, registerStep, deployStep];
+                return [validateGroupsStep, validateSecretStoresStep, prepareStep, publishStep, registerStep, applySealedSecretsStep, deployStep];
             }
 
-            return [validateGroupsStep, prepareStep, publishStep, deployStep];
+            return [validateGroupsStep, validateSecretStoresStep, prepareStep, publishStep, applySealedSecretsStep, deployStep];
         }));
     }
 

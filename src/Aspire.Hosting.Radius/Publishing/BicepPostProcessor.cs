@@ -75,6 +75,12 @@ internal static partial class BicepPostProcessor
             infra.Add(resource);
         }
 
+        // Applications.Core/secretStores declared via AddRadiusSecretStore / WithSecretStore.
+        foreach (var resource in options.SecretStores)
+        {
+            infra.Add(resource);
+        }
+
         // Bicep `param` declarations referenced by recipe parameters bound to an
         // Aspire ParameterResource. Declared once; secret-bound params are secure so
         // no value is written to the published artifact (FR-003a).
@@ -196,7 +202,7 @@ internal static partial class BicepPostProcessor
     /// Recursively converts a string-keyed object to a Bicep object literal,
     /// preserving the Bicep type of each value (FR-003).
     /// </summary>
-    private static BicepDictionary<object> ToBicepObject(IDictionary<string, object> dictionary)
+    internal static BicepDictionary<object> ToBicepObject(IDictionary<string, object> dictionary)
     {
         var result = new BicepDictionary<object>();
         var sink = (IDictionary<string, IBicepValue>)result;
@@ -256,6 +262,18 @@ internal static partial class BicepPostProcessor
         if (value is null)
         {
             throw new NotSupportedException("Null recipe parameter values are not supported.");
+        }
+
+        // Pass through values that are already Bicep AST nodes (e.g. a `<resource>.id`
+        // reference expression used by recipeConfig secret-store references).
+        if (value is IBicepValue alreadyBicep)
+        {
+            return alreadyBicep;
+        }
+
+        if (value is Azure.Provisioning.Expressions.BicepExpression expression)
+        {
+            return new BicepValue<object>(expression);
         }
 
         return ToBicepLiteral(value) switch

@@ -5,6 +5,7 @@
 
 #pragma warning disable ASPIRERADIUS002 // RadiusRecipe.Name signals upstream deprecation for callers; internal publisher code still reads it.
 #pragma warning disable ASPIRECOMPUTE002 // GetEndpointPropertyExpression/GetHostAddressExpression are experimental compute-environment APIs the publisher relies on.
+#pragma warning disable ASPIRERADIUS006 // Secret-store types are experimental; consumed internally by the publisher.
 
 using System.Globalization;
 using System.Net.Sockets;
@@ -14,6 +15,7 @@ using Aspire.Hosting.ApplicationModel;
 using Aspire.Hosting.Radius.Publishing.Constructs;
 using Aspire.Hosting.Radius.ResourceGroups;
 using Aspire.Hosting.Radius.ResourceMapping;
+using Aspire.Hosting.Radius.Secrets;
 using Azure.Provisioning;
 using Azure.Provisioning.Expressions;
 using Azure.Provisioning.Primitives;
@@ -284,6 +286,20 @@ internal sealed class RadiusInfrastructureBuilder
         var hasComputeResources = computeResources.Any();
         var useLegacyContainers = _environment.UseLegacyContainers;
 
+        // Radius secret stores routed to this environment/group. Applications.Core/secretStores
+        // is a legacy Applications.Core resource, so its presence forces the legacy environment/
+        // application chain (which it references for scope). No-op when no store is declared,
+        // keeping the default path byte-for-byte unchanged (FR-007, FR-017, SC-006).
+        var secretStoresForScope = GetSecretStoresForScope().ToList();
+        var hasSecretStores = secretStoresForScope.Count > 0;
+
+        // Secret-store consumers (recipeConfig auth / envSecrets) also require the legacy
+        // Applications.Core/environments chain, since recipeConfig lives on that resource.
+        var secretStoresAnnotation = _environment.Annotations
+            .OfType<Annotations.RadiusSecretStoresAnnotation>()
+            .FirstOrDefault();
+        var hasSecretStoreConsumers = secretStoresAnnotation is { Consumers.Count: > 0 };
+
         // Compute workloads can route to either the UDT compute container type
         // or the legacy Applications.Core/containers type. When containers go
         // legacy they don't force the UDT chain (only legacy parents).
@@ -357,7 +373,7 @@ internal sealed class RadiusInfrastructureBuilder
         LegacyApplicationEnvironmentConstruct? legacyEnvConstruct = null;
         LegacyApplicationConstruct? legacyAppConstruct = null;
 
-        if (hasLegacyResources || computeForcesLegacyChain)
+        if (hasLegacyResources || computeForcesLegacyChain || hasSecretStores || hasSecretStoreConsumers)
         {
             // If the UDT chain is also emitted we suffix legacy identifiers with
             // `_legacy`; otherwise (pure-legacy publish) legacy can claim the
@@ -387,6 +403,10 @@ internal sealed class RadiusInfrastructureBuilder
 
             options.LegacyApplications.Add(legacyAppConstruct);
         }
+
+        // Secret stores (Applications.Core/secretStores) — emitted after the legacy chain they
+        // reference for scope. No-op when no store is declared.
+        EmitSecretStores(options, secretStoresForScope, legacyEnvConstruct, legacyAppConstruct);
 
         // 4. Resource type instances — parent wiring depends on legacy vs UDT.
         // Track each builder-created instance's parent pair so RewireIdReferences
@@ -1116,6 +1136,256 @@ internal sealed class RadiusInfrastructureBuilder
         construct.ApplicationName = identifier;
         construct.EnvironmentId = ResolveEnvironmentId(envConstruct);
         return construct;
+    }
+
+    /// <summary>
+    /// Selects the Radius secret stores that belong to the scope currently being built.
+    /// In the grouped publish path only the stores routed to this group are emitted; in the
+    /// no-group path environment-scoped stores owned by this environment and all
+    /// application-scoped stores are emitted.
+    /// </summary>
+    private IEnumerable<RadiusSecretStoreResource> GetSecretStoresForScope()
+    {
+        var stores = _model.Resources.OfType<RadiusSecretStoreResource>();
+        if (_groupContext is not null)
+        {
+            return stores.Where(s => _groupContext.ResourceNames.Contains(s.Name));
+        }
+
+        return stores.Where(s =>
+            (s.Scope == RadiusSecretStoreScope.Environment && ReferenceEquals(s.OwningEnvironment, _environment))
+            || s.Scope == RadiusSecretStoreScope.Application);
+    }
+
+    /// <summary>
+    /// Emits one <see cref="RadiusSecretStoreConstruct"/> per declared store, scoped to the
+    /// legacy Applications.Core environment/application (secret stores are Applications.Core
+    /// resources) and populated per mode (FR-003, FR-004, FR-013).
+    /// </summary>
+    private void EmitSecretStores(
+        RadiusInfrastructureOptions options,
+        IReadOnlyList<RadiusSecretStoreResource> stores,
+        LegacyApplicationEnvironmentConstruct? legacyEnvConstruct,
+        LegacyApplicationConstruct? legacyAppConstruct)
+    {
+        var storeConstructs = new Dictionary<string, RadiusSecretStoreConstruct>(StringComparer.Ordinal);
+
+        foreach (var store in stores)
+        {
+            var identifier = BicepPostProcessor.SanitizeIdentifier(store.Name);
+            var construct = new RadiusSecretStoreConstruct(identifier)
+            {
+                StoreName = store.Name,
+                StoreType = store.Type.ToRadiusTypeString(),
+            };
+
+            // Scope is implied by the declaring API form: application-scoped stores reference the
+            // application; environment-scoped stores reference the environment (or, cross-group,
+            // the environment's full UCP ID).
+            if (store.Scope == RadiusSecretStoreScope.Application && legacyAppConstruct is not null)
+            {
+                construct.ApplicationId = BuildIdExpression(legacyAppConstruct);
+            }
+            else if (legacyEnvConstruct is not null)
+            {
+                construct.EnvironmentId = BuildIdExpression(legacyEnvConstruct);
+            }
+            else
+            {
+                construct.EnvironmentId = ResolveEnvironmentId(null);
+            }
+
+            PopulateInlineSecretStoreData(store, construct);
+            PopulateSecretReferenceData(store, construct);
+
+            if (store.Population.HasSealedSecret)
+            {
+                options.SealedSecretManifestPaths.Add(store.Population.SealedManifestPath!);
+            }
+
+            storeConstructs[store.Name] = construct;
+            options.SecretStores.Add(construct);
+        }
+
+        ApplySecretStoreConsumers(legacyEnvConstruct, storeConstructs);
+    }
+
+    /// <summary>
+    /// Emits the environment's <c>recipeConfig</c> from the recorded secret-store consumers
+    /// (private Bicep-registry auth, Terraform Git PAT auth, and <c>envSecrets</c>), referencing
+    /// each store by its in-group <c>.id</c> or, cross-group, its fully-qualified UCP ID (FR-012).
+    /// </summary>
+    private void ApplySecretStoreConsumers(
+        LegacyApplicationEnvironmentConstruct? legacyEnvConstruct,
+        IReadOnlyDictionary<string, RadiusSecretStoreConstruct> storeConstructs)
+    {
+        var annotation = _environment.Annotations
+            .OfType<Annotations.RadiusSecretStoresAnnotation>()
+            .FirstOrDefault();
+        if (legacyEnvConstruct is null || annotation is null || annotation.Consumers.Count == 0)
+        {
+            return;
+        }
+
+        var bicepAuth = new Dictionary<string, object>(StringComparer.Ordinal);
+        var gitPat = new Dictionary<string, object>(StringComparer.Ordinal);
+        var envSecrets = new Dictionary<string, object>(StringComparer.Ordinal);
+
+        foreach (var consumer in annotation.Consumers)
+        {
+            var secretRef = ResolveSecretStoreReference(consumer.Store, storeConstructs);
+            switch (consumer.Kind)
+            {
+                case Secrets.RadiusSecretStoreConsumerKind.BicepRegistryAuth:
+                    bicepAuth[consumer.Selector!] = new Dictionary<string, object> { ["secret"] = secretRef };
+                    break;
+                case Secrets.RadiusSecretStoreConsumerKind.TerraformGitPat:
+                    gitPat[consumer.Selector!] = new Dictionary<string, object> { ["secret"] = secretRef };
+                    break;
+                case Secrets.RadiusSecretStoreConsumerKind.EnvSecret:
+                    envSecrets[consumer.Selector!] = new Dictionary<string, object>
+                    {
+                        ["source"] = secretRef,
+                        ["key"] = consumer.Key!,
+                    };
+                    break;
+                default:
+                    // Terraform provider secrets and gateway TLS are not emitted here.
+                    break;
+            }
+        }
+
+        var recipeConfig = new Dictionary<string, object>(StringComparer.Ordinal);
+        if (bicepAuth.Count > 0)
+        {
+            recipeConfig["bicep"] = new Dictionary<string, object> { ["authentication"] = bicepAuth };
+        }
+
+        if (gitPat.Count > 0)
+        {
+            recipeConfig["terraform"] = new Dictionary<string, object>
+            {
+                ["authentication"] = new Dictionary<string, object>
+                {
+                    ["git"] = new Dictionary<string, object> { ["pat"] = gitPat },
+                },
+            };
+        }
+
+        if (envSecrets.Count > 0)
+        {
+            recipeConfig["envSecrets"] = envSecrets;
+        }
+
+        if (recipeConfig.Count > 0)
+        {
+            legacyEnvConstruct.RecipeConfig = BicepPostProcessor.ToBicepObject(recipeConfig);
+        }
+    }
+
+    /// <summary>
+    /// Resolves the value emitted for a secret-store reference in <c>recipeConfig</c>: the store's
+    /// in-group <c>.id</c> expression, or its fully-qualified UCP ID when the store is routed to a
+    /// different group (FR-012, FR-014).
+    /// </summary>
+    private object ResolveSecretStoreReference(
+        RadiusSecretStoreResource store,
+        IReadOnlyDictionary<string, RadiusSecretStoreConstruct> storeConstructs)
+    {
+        if (storeConstructs.TryGetValue(store.Name, out var construct))
+        {
+            return BuildIdExpression(construct);
+        }
+
+        if (_groupContext is not null &&
+            _groupContext.ReferenceByResourceName.TryGetValue(store.Name, out var reference))
+        {
+            return reference.ToUcpResourceId("Applications.Core/secretStores", store.Name);
+        }
+
+        return store.Name;
+    }
+
+    /// <summary>
+    /// Populates a secret-store construct's <c>data</c> for the inline (Radius-created) mode:
+    /// each key's value is a reference to a valueless <c>@secure()</c> Bicep <c>param</c>
+    /// (reusing <see cref="GetOrAddRecipeParameter"/>), with <c>encoding</c> emitted when the
+    /// author set it explicitly or the type default is not <c>raw</c> (FR-003, FR-013).
+    /// </summary>
+    private void PopulateInlineSecretStoreData(RadiusSecretStoreResource store, RadiusSecretStoreConstruct construct)
+    {
+        if (!store.Population.HasInlineData)
+        {
+            return;
+        }
+
+        foreach (var (key, binding) in store.Population.Data)
+        {
+            var parameter = GetOrAddRecipeParameter(binding.Parameter);
+            var entry = new RadiusSecretStoreDataEntryConstruct
+            {
+                Value = new IdentifierExpression(parameter.BicepIdentifier),
+            };
+
+            var encoding = binding.Encoding ?? store.Type.DefaultEncoding();
+            if (binding.Encoding is not null || !string.Equals(encoding, "raw", StringComparison.Ordinal))
+            {
+                entry.Encoding = encoding;
+            }
+
+            construct.Data[key] = entry;
+        }
+    }
+
+    /// <summary>
+    /// Populates a secret-store construct for the existing-secret / sealed-secret modes: emits
+    /// <c>properties.resource: '&lt;namespace&gt;/&lt;name&gt;'</c> and each declared key as an
+    /// empty object (<c>{}</c>). A bare <c>&lt;name&gt;</c> defaults its namespace to the owning
+    /// environment's <see cref="RadiusEnvironmentResource.Namespace"/> (FR-004).
+    /// </summary>
+    private void PopulateSecretReferenceData(RadiusSecretStoreResource store, RadiusSecretStoreConstruct construct)
+    {
+        if (!store.Population.IsSecretReference)
+        {
+            return;
+        }
+
+        construct.ResourceReference = ResolveSecretResourceReference(store);
+
+        foreach (var key in store.Population.Keys)
+        {
+            // An entry with no assigned properties emits as an empty object, naming a key to
+            // expose from the referenced Secret without passing any value through Aspire.
+            construct.Data[key] = new RadiusSecretStoreDataEntryConstruct();
+        }
+    }
+
+    /// <summary>
+    /// Resolves a secret store's <c>resource</c> reference: a fully-qualified
+    /// <c>&lt;namespace&gt;/&lt;name&gt;</c> is emitted verbatim; a bare <c>&lt;name&gt;</c> is
+    /// prefixed with the owning environment's namespace (FR-004).
+    /// </summary>
+    private string ResolveSecretResourceReference(RadiusSecretStoreResource store)
+    {
+        var population = store.Population;
+        var defaultNamespace = store.OwningEnvironment?.Namespace ?? _environment.Namespace;
+
+        // For a sealed store the underlying Secret's namespace/name come from the SealedSecret
+        // manifest metadata (also the deploy-time materialization poll target); a missing or
+        // unreadable manifest fails publish with ASPIRERADIUS044.
+        if (population.HasSealedSecret)
+        {
+            var (ns, name) = SealedSecretManifest.ReadMetadata(store.Name, population.SealedManifestPath!, defaultNamespace);
+            return $"{ns}/{name}";
+        }
+
+        var reference = population.ResourceReference!;
+        if (reference.Contains('/', StringComparison.Ordinal))
+        {
+            return reference;
+        }
+
+        return $"{defaultNamespace}/{reference}";
     }
 
     private RadiusResourceTypeConstruct CreateResourceTypeConstruct(

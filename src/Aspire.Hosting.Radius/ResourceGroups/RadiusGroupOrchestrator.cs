@@ -1,6 +1,8 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+#pragma warning disable ASPIRERADIUS006 // Secret-store consumer edges reference the experimental store resource.
+
 using Aspire.Hosting.ApplicationModel;
 using Aspire.Hosting.Radius.Annotations;
 
@@ -449,6 +451,35 @@ internal sealed class RadiusGroupOrchestrator
             if (reference.IsCrossGroupEnvironment)
             {
                 edges.Add((reference.Group, reference.EnvironmentGroup));
+            }
+        }
+
+        // Cross-group secret-store consumer edges: a recipeConfig / envSecrets consumer on an
+        // environment references a secret store; when the store is routed to another group, the
+        // consuming environment's group depends on the store's group so the store deploys first
+        // (FR-014).
+        foreach (var resource in routable)
+        {
+            if (resource is not RadiusEnvironmentResource ||
+                !groupOf.TryGetValue(resource, out var envReference))
+            {
+                continue;
+            }
+
+            var annotation = resource.Annotations.OfType<RadiusSecretStoresAnnotation>().FirstOrDefault();
+            if (annotation is null)
+            {
+                continue;
+            }
+
+            foreach (var consumer in annotation.Consumers)
+            {
+                if (byName.TryGetValue(consumer.Store.Name, out var storeResource) &&
+                    groupOf.TryGetValue(storeResource, out var storeReference) &&
+                    !string.Equals(envReference.Group, storeReference.Group, StringComparison.Ordinal))
+                {
+                    edges.Add((envReference.Group, storeReference.Group));
+                }
             }
         }
 

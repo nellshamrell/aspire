@@ -100,4 +100,120 @@ public class SealedSecretManifestTests : IDisposable
 
         Assert.Contains("ASPIRERADIUS044", ex.Message);
     }
+
+    [Fact]
+    public void ReadMetadata_PlaintextSecret_Throws_ASPIRERADIUS044()
+    {
+        // A plaintext Kubernetes Secret also carries metadata.name; it must be rejected before its
+        // metadata is trusted so cleartext credentials are never copied or applied.
+        var path = Write(
+            "apiVersion: v1\n" +
+            "kind: Secret\n" +
+            "metadata:\n" +
+            "  name: db-creds\n" +
+            "  namespace: app\n" +
+            "data:\n" +
+            "  username: dXNlcg==\n");
+
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => SealedSecretManifest.ReadMetadata("store", path, "env-default"));
+
+        Assert.Contains("ASPIRERADIUS044", ex.Message);
+        Assert.Contains("plaintext", ex.Message);
+    }
+
+    [Fact]
+    public void ReadMetadata_WrongKind_Throws_ASPIRERADIUS044()
+    {
+        var path = Write(
+            "apiVersion: bitnami.com/v1alpha1\n" +
+            "kind: ConfigMap\n" +
+            "metadata:\n" +
+            "  name: db-creds\n");
+
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => SealedSecretManifest.ReadMetadata("store", path, "env-default"));
+
+        Assert.Contains("ASPIRERADIUS044", ex.Message);
+    }
+
+    [Fact]
+    public void ReadMetadata_WrongApiVersion_Throws_ASPIRERADIUS044()
+    {
+        var path = Write(
+            "apiVersion: v1\n" +
+            "kind: SealedSecret\n" +
+            "metadata:\n" +
+            "  name: db-creds\n");
+
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => SealedSecretManifest.ReadMetadata("store", path, "env-default"));
+
+        Assert.Contains("ASPIRERADIUS044", ex.Message);
+    }
+
+    [Fact]
+    public void ReadMetadata_MultiDocument_Throws_ASPIRERADIUS044()
+    {
+        var path = Write(
+            "apiVersion: bitnami.com/v1alpha1\n" +
+            "kind: SealedSecret\n" +
+            "metadata:\n" +
+            "  name: db-creds\n" +
+            "---\n" +
+            "apiVersion: bitnami.com/v1alpha1\n" +
+            "kind: SealedSecret\n" +
+            "metadata:\n" +
+            "  name: other-creds\n");
+
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => SealedSecretManifest.ReadMetadata("store", path, "env-default"));
+
+        Assert.Contains("ASPIRERADIUS044", ex.Message);
+        Assert.Contains("multiple YAML", ex.Message);
+    }
+
+    [Fact]
+    public void ReadMetadata_MultiDocumentWithCommentedSeparator_Throws_ASPIRERADIUS044()
+    {
+        // A YAML document-start marker may carry a trailing comment (`--- # ...`); it still separates
+        // documents, so a second (possibly plaintext) document must not slip past validation.
+        var path = Write(
+            "apiVersion: bitnami.com/v1alpha1\n" +
+            "kind: SealedSecret\n" +
+            "metadata:\n" +
+            "  name: db-creds\n" +
+            "--- # second document\n" +
+            "apiVersion: v1\n" +
+            "kind: Secret\n" +
+            "metadata:\n" +
+            "  name: plaintext-creds\n" +
+            "data:\n" +
+            "  password: c2VjcmV0\n");
+
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => SealedSecretManifest.ReadMetadata("store", path, "env-default"));
+
+        Assert.Contains("ASPIRERADIUS044", ex.Message);
+        Assert.Contains("multiple YAML", ex.Message);
+    }
+
+    [Fact]
+    public void ReadMetadata_LeadingDocumentMarker_IsAllowed()
+    {
+        // A single leading `---` document-start marker is valid YAML and must not be mistaken for a
+        // multi-document manifest.
+        var path = Write(
+            "---\n" +
+            "apiVersion: bitnami.com/v1alpha1\n" +
+            "kind: SealedSecret\n" +
+            "metadata:\n" +
+            "  name: db-creds\n" +
+            "  namespace: app\n");
+
+        var metadata = SealedSecretManifest.ReadMetadata("store", path, "env-default");
+
+        Assert.Equal("db-creds", metadata.Name);
+        Assert.Equal("app", metadata.Namespace);
+    }
 }

@@ -6,7 +6,6 @@
 
 using System.Diagnostics.CodeAnalysis;
 using Aspire.Hosting.ApplicationModel;
-using Aspire.Hosting.Radius.Annotations;
 using Aspire.Hosting.Radius.Publishing;
 using Aspire.Hosting.Utils;
 using Microsoft.Extensions.DependencyInjection;
@@ -31,7 +30,7 @@ public class AddRadiusSecretStoreTests
     }
 
     [Fact]
-    public void WithSecretStore_AddsEnvironmentScopedResource_AndAnnotation()
+    public void WithSecretStore_AddsEnvironmentScopedResource_OwnedByEnvironment()
     {
         using var builder = TestDistributedApplicationBuilder.Create(DistributedApplicationOperation.Publish);
         var pass = builder.AddParameter("db-pass", secret: true);
@@ -41,9 +40,12 @@ public class AddRadiusSecretStoreTests
             s.WithData(d => d.Add("api-key", pass)));
 
         Assert.Same(env, returned);
-        var annotation = env.Resource.Annotations.OfType<RadiusSecretStoresAnnotation>().Single();
-        Assert.Single(annotation.Stores);
-        Assert.Equal("api-key", annotation.Stores[0].Name);
+        using var app = builder.Build();
+        var model = app.Services.GetRequiredService<DistributedApplicationModel>();
+        var store = Assert.Single(model.Resources.OfType<RadiusSecretStoreResource>());
+        Assert.Equal("api-key", store.Name);
+        Assert.Equal(RadiusSecretStoreScope.Environment, store.Scope);
+        Assert.Same(env.Resource, store.OwningEnvironment);
     }
 
     [Fact]

@@ -76,4 +76,27 @@ public class RadiusDeployParametersTests
         Assert.DoesNotContain("TopSecretValue", redacted);
         Assert.Contains("recipeSecret=***", redacted);
     }
+
+    [Fact]
+    public void BuildSecretParametersJson_ProducesArmDeploymentParametersShape()
+    {
+        var json = RadiusDeploymentPipelineStep.BuildSecretParametersJson(
+            new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["dbPassword"] = "s3cr3t",
+                ["apiKey"] = "abc123",
+            });
+
+        using var doc = System.Text.Json.JsonDocument.Parse(json);
+        var root = doc.RootElement;
+
+        Assert.Equal(
+            "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+            root.GetProperty("$schema").GetString());
+        Assert.Equal("1.0.0.0", root.GetProperty("contentVersion").GetString());
+
+        var parameters = root.GetProperty("parameters");
+        Assert.Equal("abc123", parameters.GetProperty("apiKey").GetProperty("value").GetString());
+        Assert.Equal("s3cr3t", parameters.GetProperty("dbPassword").GetProperty("value").GetString());
+    }
 }

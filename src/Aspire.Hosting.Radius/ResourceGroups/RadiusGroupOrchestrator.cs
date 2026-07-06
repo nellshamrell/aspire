@@ -372,6 +372,19 @@ internal sealed class RadiusGroupOrchestrator
             // read the *original* resource's annotations here (not just the parent's) and treat a
             // child-declared route as explicit routing that pulls the parent into the model.
             var annotations = resource.Annotations.OfType<RadiusResourceGroupAnnotation>().ToList();
+
+            // Environment-scoped secret stores are never independently routed by the author — they
+            // belong to their owning environment. Inherit the environment's routing so the store lands
+            // in the same group (and thus the same emitted artifact) instead of being silently omitted
+            // from grouped publish/deploy or, once routable, treated as an orphan (ASPIRERADIUS031).
+            // Application-scoped stores span the application and remain explicitly routable below, so an
+            // un-routed one fails fast rather than attaching to an arbitrary group's application.
+            if (annotations.Count == 0 &&
+                resolved is RadiusSecretStoreResource { Scope: RadiusSecretStoreScope.Environment, OwningEnvironment: { } owningEnvironment })
+            {
+                annotations = owningEnvironment.Annotations.OfType<RadiusResourceGroupAnnotation>().ToList();
+            }
+
             if (!IsRoutable(resolved) && annotations.Count == 0)
             {
                 continue;
@@ -405,6 +418,7 @@ internal sealed class RadiusGroupOrchestrator
         resource is RadiusEnvironmentResource
         || resource is ProjectResource
         || resource is ContainerResource
+        || resource is RadiusSecretStoreResource
         || resource is IResourceWithConnectionString;
 
     /// <summary>

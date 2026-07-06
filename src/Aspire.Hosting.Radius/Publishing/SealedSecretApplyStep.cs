@@ -145,15 +145,18 @@ internal sealed class SealedSecretApplyStep
             var (environment, groupContext) = build;
 
             // Re-run the group's build to learn exactly which sealed stores it emitted (and their
-            // source manifest paths), matching the grouped publish byte-for-byte.
-            var builder = new RadiusInfrastructureBuilder(environment, model, typeMapper, logger, groupContext);
+            // source manifest paths), matching the grouped publish byte-for-byte. Pass the published
+            // group output directory so the build's sealed-metadata read prefers the self-contained
+            // published artifact over the author's source manifest path (which may be absent when
+            // deploying on a different machine than the one that published).
+            var groupOutputDir = Path.Combine(rootOutputDir, "groups", group);
+            var builder = new RadiusInfrastructureBuilder(environment, model, typeMapper, logger, groupContext, groupOutputDir);
             var options = await builder.BuildAsync(context.ExecutionContext, cancellationToken).ConfigureAwait(false);
             if (options.SealedSecretManifestPaths.Count == 0)
             {
                 continue;
             }
 
-            var groupOutputDir = Path.Combine(rootOutputDir, "groups", group);
             foreach (var (storeName, sourcePath) in options.SealedSecretManifestPaths)
             {
                 if (!storesByName.TryGetValue(storeName, out var store))
@@ -211,11 +214,15 @@ internal sealed class SealedSecretApplyStep
 
     private static async Task EnsureKubectlAsync(CancellationToken cancellationToken)
     {
+        // DetectKubectlAsync runs `kubectl version --client`, which only proves the kubectl client
+        // binary is present on PATH — it does NOT contact the cluster or verify the Sealed Secrets
+        // controller. Keep this message scoped to the client so it isn't misleading; a missing
+        // controller surfaces later as a materialization timeout (ASPIRERADIUS046).
         if (!await DetectKubectlAsync(cancellationToken).ConfigureAwait(false))
         {
             throw new InvalidOperationException(
-                "'kubectl' was not found on PATH, or the Sealed Secrets controller is not installed in the " +
-                "target cluster. Install kubectl and the controller, then re-run deploy. Diagnostic: ASPIRERADIUS045.");
+                "'kubectl' was not found on PATH. Applying a SealedSecret manifest requires the kubectl " +
+                "client. Install kubectl and ensure it is on PATH, then re-run deploy. Diagnostic: ASPIRERADIUS045.");
         }
     }
 
@@ -311,9 +318,35 @@ internal sealed class SealedSecretApplyStep
     private static async Task<bool> SecretExistsAsync(string ns, string name, string? kubeContext, CancellationToken cancellationToken)
     {
         var args = BuildGetSecretArgs(ns, name, kubeContext);
-        var (exitCode, _) = await RunKubectlAsync(args, logger: null, cancellationToken).ConfigureAwait(false);
-        return exitCode == 0;
+        var (exitCode, stderr) = await RunKubectlAsync(args, logger: null, cancellationToken).ConfigureAwait(false);
+        if (exitCode == 0)
+        {
+            return true;
+        }
+
+        // `kubectl get secret <name>` exits non-zero both when the Secret does not (yet) exist and
+        // when the command itself fails (cluster unreachable, auth/RBAC denied, bad context, missing
+        // auth-plugin executable). Only a genuine NotFound for THIS Secret means "keep polling"; any
+        // other failure will never resolve by waiting, so surface it immediately instead of burning
+        // the whole materialization timeout. NotFound stderr:
+        //   Error from server (NotFound): secrets "my-secret" not found
+        if (IsNotFound(stderr, name))
+        {
+            return false;
+        }
+
+        throw new InvalidOperationException(
+            $"Failed to query the Secret '{ns}/{name}' with 'kubectl get secret': {stderr.Trim()}");
     }
+
+    // Distinguishes a Kubernetes NotFound response for the specific target Secret (it has not
+    // materialized yet) from every other kubectl failure. The canonical message is
+    // `Error from server (NotFound): secrets "<name>" not found`, so match that exact phrasing rather
+    // than a bare "not found" substring — otherwise unrelated client errors (e.g. "exec plugin ... not
+    // found", "command not found", or a NotFound for a different resource such as a namespace) would be
+    // wrongly treated as "keep waiting" and burn the full timeout.
+    internal static bool IsNotFound(string stderr, string name) =>
+        stderr.Contains($"secrets \"{name}\" not found", StringComparison.Ordinal);
 
     // Resolves the kubecontext of the active rad workspace so the SealedSecret is applied to the
     // same cluster rad deploy will hit (not kubectl's ambient current-context). Best-effort: reads

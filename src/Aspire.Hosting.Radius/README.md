@@ -196,7 +196,7 @@ disjoint numeric ranges reserved so the IDs never collide:
 | `ASPIRERADIUS010`–`ASPIRERADIUS019` | Cloud-provider configuration errors | Thrown `InvalidOperationException` (message includes the ID) |
 | `ASPIRERADIUS020`–`ASPIRERADIUS029` | Cloud-managed resource (`WithManagedResource`) and recipe/recipe-parameter validation | Thrown `ArgumentException` (config time) / `InvalidOperationException` (publish time) |
 | `ASPIRERADIUS030`–`ASPIRERADIUS039` | Multi-resource-group routing (`WithRadiusResourceGroup`) validation | Thrown `ArgumentException` (call site, e.g. empty name) / `InvalidOperationException` (fail-fast gate before publish/deploy) |
-| `ASPIRERADIUS040`–`ASPIRERADIUS048` | Secret-store (`AddRadiusSecretStore` / `WithSecretStore`) validation, publish, and deploy | Thrown `ArgumentException` (call site, e.g. empty/invalid name or key) / `InvalidOperationException` (fail-fast gate, publish, or deploy) |
+| `ASPIRERADIUS040`–`ASPIRERADIUS055` | Secret-store (`AddRadiusSecretStore` / `WithSecretStore`) validation, publish, and deploy | Thrown `ArgumentException` (call site, e.g. empty/invalid name or key) / `InvalidOperationException` (fail-fast gate, publish, or deploy) |
 
 Runtime validation codes:
 
@@ -226,10 +226,17 @@ Runtime validation codes:
 | `ASPIRERADIUS042` | Publish/Deploy gate | An inline (`WithData`) secret key is bound to a non-secret `ParameterResource`. Use `builder.AddParameter(name, secret: true)`. |
 | `ASPIRERADIUS043` | Publish/Deploy gate | A secret store declares a duplicate `data` key. (An empty/whitespace key is rejected at the call site with `ArgumentException`.) |
 | `ASPIRERADIUS044` | Publish | A `FromSealedSecret(...)` manifest path does not exist or is unreadable. |
-| `ASPIRERADIUS045` | Deploy | `kubectl` is not on `PATH`, or the Sealed Secrets controller is not installed in the target cluster. |
+| `ASPIRERADIUS045` | Deploy | The `kubectl` client is not on `PATH`. Applying a `SealedSecret` manifest requires the kubectl client; install it and ensure it is on `PATH`. (A missing Sealed Secrets controller is not detected here — it surfaces as a materialization timeout, `ASPIRERADIUS046`.) |
 | `ASPIRERADIUS046` | Deploy | The `Secret` a sealed store references never materialized within the timeout (controller not installed, wrong namespace from a `strict`-scoped seal, or decryption failure). Surfaced before `rad deploy`. |
 | `ASPIRERADIUS047` | Publish/Deploy gate | An invalid `encoding` was set for the store type (e.g. `raw` on a `certificate` store, which Radius requires to be `base64`). |
 | `ASPIRERADIUS048` | Publish/Deploy gate | Two secret stores map to the same Bicep identifier within the same scope (e.g. `db-creds` and `db.creds` both sanitize to `db_creds`). Rename one so they produce distinct identifiers. |
+| `ASPIRERADIUS049` | Config (call site) | A secret-store name is not a valid resource-name segment. Use a name that starts with a letter and contains only letters, digits, `-`, `.`, or `_`. |
+| `ASPIRERADIUS050` | Publish | A secret-store consumer (recipe environment secret, gateway TLS, etc.) references a store that is not emitted or resolvable from the consuming environment. Ensure the store is declared and routed into a reachable scope/group. |
+| `ASPIRERADIUS051` | Publish/Deploy gate | A consumer references a store whose `type` is incompatible with the consumer kind (Bicep-registry and Terraform-Git-PAT auth require a `basicAuthentication` store; gateway TLS requires a `certificate` store). |
+| `ASPIRERADIUS052` | Publish/Deploy gate | A recipe environment secret (`WithRecipeEnvironmentSecret`) references a key the store does not declare (enforced only when the store declares an explicit key set). |
+| `ASPIRERADIUS053` | Publish/Deploy gate | A store is referenced as a Terraform provider secret (`WithTerraformProviderSecret`), which is not yet supported. Remove the call until provider-secret emission is modeled. |
+| `ASPIRERADIUS054` | Config (call site) | An application-scoped store was used for gateway TLS (`WithTlsCertificate`), which requires an environment-scoped `certificate` store. Declare the store with `WithSecretStore` on an environment. |
+| `ASPIRERADIUS055` | Publish/Deploy gate | An application-scoped `FromExistingSecret` store uses a bare `<name>` reference. Application-scoped stores have no owning environment to default the namespace from; use a fully-qualified `<namespace>/<name>` reference. |
 
 > `ASPIRERADIUS021` was retired: the cloud is taken from the explicit `RadiusCloud` argument
 > rather than inferred from the recipe location, so there is no cloud/recipe conflict to flag.
@@ -239,6 +246,8 @@ For native `Radius.*` types, recipe parameters are configured at the environment
 ## Known limitations
 
 * For `ASPIRERADIUS011`, AWS access-key credential conflicts are compared by the Aspire parameter name that supplies the access-key ID, not by the resolved access-key value. Two environments that use different parameter names for the same key can be flagged as a false conflict, while the same parameter name with different values is not flagged.
+* `WithTerraformProviderSecret` is not yet supported: the Radius `recipeConfig.terraform.providers.<name>` schema is an array of objects that the Bicep post-processor cannot currently emit, and the API does not capture the provider secret's name/key. Calls fail with `ASPIRERADIUS053` until provider-secret emission is modeled.
+* `WithTlsCertificate` (gateway TLS) validates the store (must be an environment-scoped `certificate` store, `ASPIRERADIUS051`/`ASPIRERADIUS054`) and records the reference deterministically on the owning environment, but does not yet emit `tls.certificateFrom` wiring because no gateway resource type is modeled today. The recorded reference is a placeholder until gateways are modeled.
 
 ## Additional documentation
 

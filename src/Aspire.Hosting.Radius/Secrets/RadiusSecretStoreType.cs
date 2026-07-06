@@ -33,7 +33,21 @@ public enum RadiusSecretStoreType
     AzureWorkloadIdentity = 3,
 
     /// <summary>AWS IRSA credentials (Radius <c>awsIRSA</c>). Requires <c>roleARN</c>.</summary>
-    AwsIRSA = 4,
+    AwsIrsa = 4,
+}
+
+/// <summary>
+/// The per-key <c>encoding</c> of an inline Radius secret-store data value, mapping to the
+/// <c>Applications.Core/secretStores</c> <c>data.&lt;key&gt;.encoding</c> string values.
+/// </summary>
+[Experimental("ASPIRERADIUS006", UrlFormat = "https://aka.ms/aspire/diagnostics/{0}")]
+public enum RadiusSecretStoreEncoding
+{
+    /// <summary>Raw UTF-8 value (Radius <c>raw</c>). Default for all types except <c>certificate</c>.</summary>
+    Raw = 0,
+
+    /// <summary>Base64-encoded value (Radius <c>base64</c>). Required for <c>certificate</c> stores.</summary>
+    Base64 = 1,
 }
 
 /// <summary>
@@ -49,8 +63,16 @@ internal static class RadiusSecretStoreTypeExtensions
         RadiusSecretStoreType.Certificate => "certificate",
         RadiusSecretStoreType.BasicAuthentication => "basicAuthentication",
         RadiusSecretStoreType.AzureWorkloadIdentity => "azureWorkloadIdentity",
-        RadiusSecretStoreType.AwsIRSA => "awsIRSA",
+        RadiusSecretStoreType.AwsIrsa => "awsIRSA",
         _ => throw new ArgumentOutOfRangeException(nameof(type), type, "Unknown Radius secret-store type."),
+    };
+
+    /// <summary>Returns the Radius <c>encoding</c> string (<c>raw</c>/<c>base64</c>) for <paramref name="encoding"/>.</summary>
+    internal static string ToRadiusEncodingString(this RadiusSecretStoreEncoding encoding) => encoding switch
+    {
+        RadiusSecretStoreEncoding.Raw => "raw",
+        RadiusSecretStoreEncoding.Base64 => "base64",
+        _ => throw new ArgumentOutOfRangeException(nameof(encoding), encoding, "Unknown Radius secret-store encoding."),
     };
 
     /// <summary>Returns the keys Radius requires for <paramref name="type"/> (empty for <see cref="RadiusSecretStoreType.Generic"/>).</summary>
@@ -59,7 +81,7 @@ internal static class RadiusSecretStoreTypeExtensions
         RadiusSecretStoreType.Certificate => ["tls.crt", "tls.key"],
         RadiusSecretStoreType.BasicAuthentication => ["username", "password"],
         RadiusSecretStoreType.AzureWorkloadIdentity => ["clientId", "tenantId"],
-        RadiusSecretStoreType.AwsIRSA => ["roleARN"],
+        RadiusSecretStoreType.AwsIrsa => ["roleARN"],
         _ => [],
     };
 

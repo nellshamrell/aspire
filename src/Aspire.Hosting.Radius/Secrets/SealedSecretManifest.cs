@@ -29,8 +29,8 @@ internal static class SealedSecretManifest
     /// <paramref name="manifestPath"/>.
     /// </summary>
     /// <exception cref="InvalidOperationException">
-    /// The manifest is missing, unreadable, or has no <c>metadata.name</c>
-    /// (<c>ASPIRERADIUS044</c>).
+    /// The manifest is missing, unreadable, has no <c>metadata.name</c>, or is not a single
+    /// encrypted Bitnami <c>SealedSecret</c> document (<c>ASPIRERADIUS044</c>).
     /// </exception>
     internal static Metadata ReadMetadata(
         string storeName, string manifestPath, string defaultNamespace)
@@ -46,6 +46,12 @@ internal static class SealedSecretManifest
                 $"Secret store '{storeName}' references a SealedSecret manifest at '{manifestPath}' that " +
                 $"is missing or unreadable ({ex.GetType().Name}). Diagnostic: ASPIRERADIUS044.", ex);
         }
+
+        // Gate on the document kind BEFORE trusting any metadata. A plaintext `kind: Secret`
+        // manifest also carries a `metadata.name`, so without this check we would happily copy it
+        // into published artifacts and `kubectl apply` it — leaking cleartext credentials to disk
+        // and the cluster. Only an encrypted Bitnami SealedSecret is ever accepted.
+        ValidateIsSealedSecret(storeName, manifestPath, text);
 
         // Restrict the metadata search to the top-level `metadata:` block so we never pick up a
         // nested `spec.template.metadata.name/namespace` or an `encryptedData` key literally named
@@ -74,6 +80,94 @@ internal static class SealedSecretManifest
         var ns = MatchMetadataField(metadataBlock, "namespace");
         var namespaceWasExplicit = !string.IsNullOrWhiteSpace(ns);
         return new Metadata(namespaceWasExplicit ? ns! : defaultNamespace, name!, namespaceWasExplicit);
+    }
+
+    // Rejects anything that is not a single encrypted Bitnami SealedSecret document. kubeseal output
+    // looks like:
+    //   apiVersion: bitnami.com/v1alpha1
+    //   kind: SealedSecret
+    //   metadata: { ... }
+    //   spec: { encryptedData: { ... } }
+    // We require kind == SealedSecret and apiVersion starting "bitnami.com/", and explicitly reject a
+    // plaintext `kind: Secret`. Multi-document (`---`-separated) and list-form (`kind: List`) manifests
+    // are rejected because the line-oriented reader below cannot unambiguously identify a single object.
+    private static void ValidateIsSealedSecret(string storeName, string manifestPath, string text)
+    {
+        if (ContainsMultipleDocuments(text))
+        {
+            throw new InvalidOperationException(
+                $"Secret store '{storeName}' references a manifest at '{manifestPath}' that contains multiple YAML " +
+                "documents. Provide a single encrypted Bitnami SealedSecret document. Diagnostic: ASPIRERADIUS044.");
+        }
+
+        var kind = ReadTopLevelScalar(text, "kind");
+        var apiVersion = ReadTopLevelScalar(text, "apiVersion");
+
+        if (string.Equals(kind, "Secret", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"Secret store '{storeName}' references a plaintext Kubernetes Secret manifest at '{manifestPath}'. " +
+                "Only an encrypted Bitnami SealedSecret is accepted so cleartext credentials are never copied into " +
+                "artifacts or applied to the cluster. Seal it with kubeseal first. Diagnostic: ASPIRERADIUS044.");
+        }
+
+        if (!string.Equals(kind, "SealedSecret", StringComparison.Ordinal) ||
+            apiVersion is null || !apiVersion.StartsWith("bitnami.com/", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"Secret store '{storeName}' references a manifest at '{manifestPath}' that is not an encrypted " +
+                "Bitnami SealedSecret (expected 'kind: SealedSecret' and an 'apiVersion' under 'bitnami.com/'; found " +
+                $"kind '{kind ?? "<none>"}', apiVersion '{apiVersion ?? "<none>"}'). Diagnostic: ASPIRERADIUS044.");
+        }
+    }
+
+    // True when the document has more than one YAML document, i.e. a document-start marker appears on
+    // its own line after non-blank/non-comment content. A leading marker (document start) is allowed.
+    // A YAML directives-end / document-start marker is `---` at line start followed by end-of-line or
+    // whitespace (so `---`, `--- `, and `--- # comment` all separate documents), but NOT `----` or
+    // `---foo` (which are ordinary scalars/keys, not markers).
+    private static bool ContainsMultipleDocuments(string text)
+    {
+        var lines = text.Replace("\r\n", "\n").Split('\n');
+        var sawContent = false;
+        foreach (var raw in lines)
+        {
+            var trimmed = raw.Trim();
+            if (IsDocumentMarker(trimmed))
+            {
+                if (sawContent)
+                {
+                    return true;
+                }
+
+                continue;
+            }
+
+            if (trimmed.Length != 0 && !trimmed.StartsWith('#'))
+            {
+                sawContent = true;
+            }
+        }
+
+        return false;
+    }
+
+    // A YAML document-start marker is exactly `---` optionally followed by whitespace and/or a comment
+    // or inline content. `----` (four dashes) and `---x` (no separating whitespace) are not markers.
+    private static bool IsDocumentMarker(string trimmedLine) =>
+        trimmedLine == "---" ||
+        (trimmedLine.StartsWith("---", StringComparison.Ordinal) &&
+         trimmedLine.Length > 3 &&
+         char.IsWhiteSpace(trimmedLine[3]));
+
+    // Reads a top-level (column-0) scalar such as `kind:` or `apiVersion:` from the whole document,
+    // ignoring the same keys when they appear indented under `spec`/`template`/`metadata`.
+    private static string? ReadTopLevelScalar(string text, string field)
+    {
+        var match = Regex.Match(
+            text,
+            $@"(?m)^{Regex.Escape(field)}:\s*(?<v>[^\s#]+)\s*$");
+        return match.Success ? match.Groups["v"].Value.Trim('\'', '"') : null;
     }
 
     // Returns the region of the document that belongs to the top-level `metadata:` mapping: the

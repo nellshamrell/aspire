@@ -160,7 +160,7 @@ public class MultiGroupDeployInvocationTests
     }
 
     [Fact]
-    public async Task SecretParameters_AreForwardedAndRedacted_PerGroup()
+    public async Task SecretParameters_AreKeptOffArgv_AndCollectedForRedaction_PerGroup()
     {
         var model = BuildModel(b =>
         {
@@ -174,16 +174,40 @@ public class MultiGroupDeployInvocationTests
         var commands = await PlanAsync(model);
         var orders = Assert.Single(commands, c => c.Group == "orders");
 
-        // The secret parameter is forwarded via --parameters and collected for redaction.
-        Assert.Contains("--parameters", orders.DeployArguments);
-        Assert.Contains("recipeSecret=TopSecretValue", orders.DeployArguments);
+        // The secret value must NOT appear on the command line (that would expose it via ps/proc);
+        // it is routed to the secure ARM JSON parameters file instead.
+        Assert.DoesNotContain("--parameters", orders.DeployArguments);
+        Assert.DoesNotContain(orders.DeployArguments, arg => arg.Contains("TopSecretValue", StringComparison.Ordinal));
+
+        // The secret parameter is carried out-of-band for the file and collected for redaction.
+        Assert.Equal("TopSecretValue", Assert.Contains("recipeSecret", orders.SecretParameters));
         Assert.Contains("TopSecretValue", orders.SecretValues);
 
-        // The logged command redacts the secret value.
+        // The logged command never contains the secret value (nothing to leak, since it is off argv).
         var logged = RadCredentialRegisterStep.RedactSecretValues(
             string.Join(' ', orders.DeployArguments), orders.SecretValues);
         Assert.DoesNotContain("TopSecretValue", logged);
-        Assert.Contains("recipeSecret=***", logged);
+    }
+
+    [Fact]
+    public async Task NonSecretParameters_AreForwardedInline_PerGroup()
+    {
+        var model = BuildModel(b =>
+        {
+            var plain = b.AddParameter("recipeVersion", "v1", secret: false);
+            b.AddRadiusEnvironment("env-orders")
+                .WithRadiusResourceGroup("orders")
+                .WithRecipeParameters(p => p["version"] = plain);
+            b.AddContainer("api", "img", "latest").WithRadiusResourceGroup("orders");
+        });
+
+        var commands = await PlanAsync(model);
+        var orders = Assert.Single(commands, c => c.Group == "orders");
+
+        Assert.Contains("--parameters", orders.DeployArguments);
+        Assert.Contains("recipeVersion=v1", orders.DeployArguments);
+        Assert.Empty(orders.SecretParameters);
+        Assert.Empty(orders.SecretValues);
     }
 
     [Fact]

@@ -60,6 +60,7 @@ internal static class RadiusSecretStoreValidation
         }
 
         ValidateNoDuplicateNames(stores);
+        ValidateConsumers(model);
     }
 
     private static void ValidateStore(RadiusSecretStoreResource store)
@@ -127,7 +128,112 @@ internal static class RadiusSecretStoreValidation
                 }
             }
         }
+
+        // ASPIRERADIUS055 — an application-scoped existing-secret store has no single owning environment,
+        // so a bare '<name>' reference has no deterministic namespace to default to (it would otherwise
+        // fall back to whichever environment happens to build the store). Require a fully-qualified
+        // '<namespace>/<name>' reference. Sealed stores are exempt: their namespace comes from the
+        // manifest metadata, not the reference.
+        if (store.Scope == RadiusSecretStoreScope.Application &&
+            population.HasExistingSecret &&
+            population.ResourceReference is { } reference &&
+            !reference.Contains('/', StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"Application-scoped secret store '{store.Name}' references the existing Secret '{reference}' " +
+                "without a namespace. Application-scoped stores have no owning environment to default the " +
+                "namespace from; use a fully-qualified '<namespace>/<name>' reference. " +
+                "Diagnostic: ASPIRERADIUS055.");
+        }
     }
+
+    /// <summary>
+    /// Validates every recorded secret-store consumer wiring across the model.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// A consumer kind is incompatible with the store type (<c>ASPIRERADIUS051</c>), an
+    /// <c>envSecrets</c> consumer references a key the store does not declare
+    /// (<c>ASPIRERADIUS052</c>), or a Terraform provider secret is referenced
+    /// (<c>ASPIRERADIUS053</c>, not yet supported).
+    /// </exception>
+    private static void ValidateConsumers(DistributedApplicationModel model)
+    {
+        foreach (var resource in model.Resources)
+        {
+            var annotation = resource.Annotations.OfType<Annotations.RadiusSecretStoresAnnotation>().FirstOrDefault();
+            if (annotation is null)
+            {
+                continue;
+            }
+
+            foreach (var consumer in annotation.Consumers)
+            {
+                ValidateConsumer(consumer);
+            }
+        }
+    }
+
+    private static void ValidateConsumer(RadiusSecretStoreConsumer consumer)
+    {
+        var store = consumer.Store;
+
+        // ASPIRERADIUS053 — Terraform provider secrets are not yet supported (see WithTerraformProviderSecret).
+        // Reject at the gate so callers get an explicit failure rather than a silent no-op at emission.
+        if (consumer.Kind == RadiusSecretStoreConsumerKind.TerraformProviderSecret)
+        {
+            throw new InvalidOperationException(
+                $"Secret store '{store.Name}' is referenced as a Terraform provider secret for provider " +
+                $"'{consumer.Selector}', which is not yet supported. Remove the WithTerraformProviderSecret call. " +
+                "Diagnostic: ASPIRERADIUS053.");
+        }
+
+        // ASPIRERADIUS051 — the consumer kind must be compatible with the store type. Bicep-registry and
+        // Terraform-git-PAT auth reference a basicAuthentication (username/password) store; gateway TLS
+        // references a certificate store. envSecrets can source from any type, so it is unconstrained.
+        var requiredType = consumer.Kind switch
+        {
+            RadiusSecretStoreConsumerKind.BicepRegistryAuth => (RadiusSecretStoreType?)RadiusSecretStoreType.BasicAuthentication,
+            RadiusSecretStoreConsumerKind.TerraformGitPat => RadiusSecretStoreType.BasicAuthentication,
+            RadiusSecretStoreConsumerKind.GatewayTls => RadiusSecretStoreType.Certificate,
+            _ => null,
+        };
+
+        if (requiredType is { } expected && store.Type != expected)
+        {
+            throw new InvalidOperationException(
+                $"Secret store '{store.Name}' of type '{store.Type.ToRadiusTypeString()}' is referenced as a " +
+                $"{DescribeKind(consumer.Kind)} consumer, which requires a '{expected.ToRadiusTypeString()}' store. " +
+                "Diagnostic: ASPIRERADIUS051.");
+        }
+
+        // ASPIRERADIUS052 — an envSecrets consumer must reference a key the store declares. Only enforce
+        // when the store declares an explicit key set (inline data, or an existing/sealed key list); a
+        // sealed/existing store with no declared keys materializes them out-of-band, so we cannot check.
+        if (consumer.Kind == RadiusSecretStoreConsumerKind.EnvSecret && consumer.Key is { } key)
+        {
+            var declaredKeys = store.Population.HasInlineData
+                ? store.Population.Data.Keys.ToList()
+                : store.Population.Keys;
+
+            if (declaredKeys.Count > 0 && !declaredKeys.Contains(key, StringComparer.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    $"Secret store '{store.Name}' does not declare the key '{key}' referenced by the recipe " +
+                    $"environment secret '{consumer.Selector}'. Declared keys: {string.Join(", ", declaredKeys)}. " +
+                    "Diagnostic: ASPIRERADIUS052.");
+            }
+        }
+    }
+
+    private static string DescribeKind(RadiusSecretStoreConsumerKind kind) => kind switch
+    {
+        RadiusSecretStoreConsumerKind.BicepRegistryAuth => "Bicep registry authentication",
+        RadiusSecretStoreConsumerKind.TerraformGitPat => "Terraform Git PAT authentication",
+        RadiusSecretStoreConsumerKind.GatewayTls => "gateway TLS",
+        RadiusSecretStoreConsumerKind.EnvSecret => "recipe environment secret",
+        RadiusSecretStoreConsumerKind.TerraformProviderSecret => "Terraform provider secret",
+        _ => kind.ToString(),
+    };
 
     private static void ValidateNoDuplicateNames(IReadOnlyList<RadiusSecretStoreResource> stores)
     {

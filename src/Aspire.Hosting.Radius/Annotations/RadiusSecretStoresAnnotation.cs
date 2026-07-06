@@ -9,16 +9,14 @@ using Aspire.Hosting.Radius.Secrets;
 namespace Aspire.Hosting.Radius.Annotations;
 
 /// <summary>
-/// Per-environment annotation collecting the Radius secret stores declared for an
-/// environment and the consumer wirings that reference them. The annotation is
-/// per-resource and is never shared between environments; it is a no-op signal for
-/// the publish/deploy steps — absent it, the byte-for-byte default path is preserved.
+/// Per-environment annotation collecting the consumer wirings that reference the Radius
+/// secret stores declared for an environment. The annotation is per-resource and is never
+/// shared between environments; it is a no-op signal for the publish/deploy steps — absent
+/// it, the byte-for-byte default path is preserved. (Declared stores are discovered from the
+/// application model directly, so they are not duplicated here.)
 /// </summary>
 internal sealed class RadiusSecretStoresAnnotation : IResourceAnnotation
 {
-    /// <summary>The secret stores declared for the owning environment.</summary>
-    public List<RadiusSecretStoreResource> Stores { get; } = [];
-
     /// <summary>The consumer wirings (recipe-config auth / envSecrets / gateway TLS) referencing declared stores.</summary>
     public List<RadiusSecretStoreConsumer> Consumers { get; } = [];
 

@@ -58,10 +58,12 @@ public sealed class RadiusSecretStoreResource : Resource
     public TimeSpan MaterializationTimeout { get; internal set; } = TimeSpan.FromSeconds(120);
 
     /// <summary>
-    /// The owning Radius environment, used to default a bare existing-secret reference's
-    /// namespace to the environment's <see cref="RadiusEnvironmentResource.Namespace"/>.
-    /// Set by <c>WithSecretStore</c>; may be resolved from the model for
-    /// <c>AddRadiusSecretStore</c>.
+    /// The owning Radius environment for an <b>environment-scoped</b> store, used to default a bare
+    /// existing-secret reference's namespace to the environment's
+    /// <see cref="RadiusEnvironmentResource.Namespace"/>. Set by <c>WithSecretStore</c>.
+    /// <see langword="null"/> for <b>application-scoped</b> stores (<c>AddRadiusSecretStore</c>),
+    /// which have no single owning environment; such stores must use a fully-qualified
+    /// <c>&lt;namespace&gt;/&lt;name&gt;</c> existing-secret reference so the namespace is deterministic.
     /// </summary>
     internal RadiusEnvironmentResource? OwningEnvironment { get; set; }
 

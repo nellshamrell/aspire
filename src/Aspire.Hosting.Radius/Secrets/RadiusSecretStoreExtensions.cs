@@ -4,7 +4,6 @@
 using System.Diagnostics.CodeAnalysis;
 using Aspire.Hosting.ApplicationModel;
 using Aspire.Hosting.Radius;
-using Aspire.Hosting.Radius.Annotations;
 using Aspire.Hosting.Radius.ResourceGroups;
 using Aspire.Hosting.Radius.Secrets;
 
@@ -77,10 +76,6 @@ public static class RadiusSecretStoreExtensions
         var storeBuilder = radius.ApplicationBuilder.ExecutionContext.IsRunMode
             ? radius.ApplicationBuilder.CreateResourceBuilder(resource)
             : radius.ApplicationBuilder.AddResource(resource);
-
-        // Record the store on the environment's annotation so the publisher can discover
-        // environment-scoped stores and so the feature's "active" signal is present.
-        RadiusSecretStoresAnnotation.GetOrAdd(radius.Resource).Stores.Add(resource);
 
         configure(storeBuilder);
         return radius;
@@ -207,7 +202,7 @@ public static class RadiusSecretStoreExtensions
             throw new ArgumentException(
                 $"Secret-store name '{name}' is invalid. It must be 1-90 characters of ASCII letters, digits, " +
                 "'-', '_', or '.', may not start or end with '.', may not contain '..', and may not be a reserved " +
-                "device name. Diagnostic: ASPIRERADIUS048.",
+                "device name. Diagnostic: ASPIRERADIUS049.",
                 nameof(name));
         }
     }
@@ -236,12 +231,12 @@ public sealed class RadiusSecretStoreDataBuilder
     public RadiusSecretStoreDataBuilder Add(
         string key,
         IResourceBuilder<ParameterResource> parameter,
-        string? encoding = null)
+        RadiusSecretStoreEncoding? encoding = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(key);
         ArgumentNullException.ThrowIfNull(parameter);
 
-        _population.Data[key] = new RadiusSecretKeyBinding(parameter.Resource, encoding);
+        _population.Data[key] = new RadiusSecretKeyBinding(parameter.Resource, encoding?.ToRadiusEncodingString());
         return this;
     }
 }

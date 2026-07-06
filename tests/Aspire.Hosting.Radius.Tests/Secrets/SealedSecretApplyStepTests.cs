@@ -120,4 +120,27 @@ public class SealedSecretApplyStepTests
         Assert.Contains("ASPIRERADIUS046", ex.Message);
         Assert.Contains("app/db-creds", ex.Message);
     }
+
+    [Theory]
+    [InlineData("Error from server (NotFound): secrets \"db-creds\" not found")]
+    [InlineData("secrets \"db-creds\" not found")]
+    public void IsNotFound_TreatsMissingSecretAsNotFound(string stderr)
+    {
+        Assert.True(SealedSecretApplyStep.IsNotFound(stderr, "db-creds"));
+    }
+
+    [Theory]
+    [InlineData("Unable to connect to the server: dial tcp 127.0.0.1:6443: connect: connection refused")]
+    [InlineData("error: You must be logged in to the server (Unauthorized)")]
+    [InlineData("Error from server (Forbidden): secrets is forbidden")]
+    [InlineData("exec: executable kubelogin not found")]
+    [InlineData("Error from server (NotFound): namespaces \"app\" not found")]
+    public void IsNotFound_TreatsRealFailuresAsNotNotFound(string stderr)
+    {
+        // A genuine kubectl failure will never resolve by polling, so it must not be treated as
+        // "keep waiting" — SecretExistsAsync surfaces it instead of burning the whole timeout. This
+        // includes a NotFound for a *different* resource (a missing namespace) and client errors that
+        // merely contain the phrase "not found".
+        Assert.False(SealedSecretApplyStep.IsNotFound(stderr, "db-creds"));
+    }
 }

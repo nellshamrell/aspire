@@ -122,7 +122,7 @@ public class SecretStoreValidationTests
                 b.AddRadiusSecretStore("tls", RadiusSecretStoreType.Certificate)
                     .WithData(d =>
                     {
-                        d.Add("tls.crt", crt, encoding: "raw");
+                        d.Add("tls.crt", crt, encoding: RadiusSecretStoreEncoding.Raw);
                         d.Add("tls.key", key);
                     });
             },
@@ -142,5 +142,78 @@ public class SecretStoreValidationTests
 
         Assert.ThrowsAny<Exception>(() =>
             builder.AddRadiusSecretStore("db-creds", RadiusSecretStoreType.Generic));
+    }
+
+    [Fact]
+    public void ConsumerKindIncompatibleWithStoreType_Throws_ASPIRERADIUS051()
+    {
+        WithModel(
+            b =>
+            {
+                var env = b.AddRadiusEnvironment("radius");
+                // Bicep-registry auth requires a basicAuthentication store; a Generic store is incompatible.
+                var store = b.AddRadiusSecretStore("s", RadiusSecretStoreType.Generic)
+                    .FromExistingSecret("app/s", "k");
+                env.WithBicepRegistryAuthentication("myregistry.azurecr.io", store);
+            },
+            m => Assert.Contains("ASPIRERADIUS051", Validate(m)));
+    }
+
+    [Fact]
+    public void EnvSecretReferencesUndeclaredKey_Throws_ASPIRERADIUS052()
+    {
+        WithModel(
+            b =>
+            {
+                var pass = b.AddParameter("p", secret: true);
+                var env = b.AddRadiusEnvironment("radius");
+                var store = b.AddRadiusSecretStore("s", RadiusSecretStoreType.Generic)
+                    .WithData(d => d.Add("password", pass));
+                // 'missing' is not a declared key on the store.
+                env.WithRecipeEnvironmentSecret("DB_PASSWORD", store, "missing");
+            },
+            m => Assert.Contains("ASPIRERADIUS052", Validate(m)));
+    }
+
+    [Fact]
+    public void TerraformProviderSecretConsumer_Throws_ASPIRERADIUS053()
+    {
+        WithModel(
+            b =>
+            {
+                var env = b.AddRadiusEnvironment("radius");
+                var store = b.AddRadiusSecretStore("s", RadiusSecretStoreType.Generic)
+                    .FromExistingSecret("app/s", "k");
+                env.WithTerraformProviderSecret("azurerm", store);
+            },
+            m => Assert.Contains("ASPIRERADIUS053", Validate(m)));
+    }
+
+    [Fact]
+    public void ApplicationScopedBareExistingSecretReference_Throws_ASPIRERADIUS055()
+    {
+        WithModel(
+            b =>
+            {
+                b.AddRadiusEnvironment("radius");
+                // Application-scoped store with a bare '<name>' reference has no owning environment
+                // to default the namespace from.
+                b.AddRadiusSecretStore("s", RadiusSecretStoreType.Generic)
+                    .FromExistingSecret("bare-name", "k");
+            },
+            m => Assert.Contains("ASPIRERADIUS055", Validate(m)));
+    }
+
+    [Fact]
+    public void ApplicationScopedQualifiedExistingSecretReference_IsAllowed()
+    {
+        WithModel(
+            b =>
+            {
+                b.AddRadiusEnvironment("radius");
+                b.AddRadiusSecretStore("s", RadiusSecretStoreType.Generic)
+                    .FromExistingSecret("prod/my-secret", "k");
+            },
+            RadiusSecretStoreValidation.Validate); // no throw
     }
 }

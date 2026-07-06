@@ -48,6 +48,15 @@ internal sealed class RadiusInfrastructureBuilder
     private readonly RadiusGroupContext? _groupContext;
 
     /// <summary>
+    /// The published group output directory (the one holding the emitted <c>app.bicep</c>), set only
+    /// on the deploy-time re-run of the build. When present, a sealed store's metadata is read from
+    /// the self-contained published artifact (preferred) rather than the author's source manifest
+    /// path, so a cross-machine <c>publish</c>-then-<c>deploy</c> works even when the source manifest
+    /// is absent on the deploying machine. <see langword="null"/> during publish (source path used).
+    /// </summary>
+    private readonly string? _publishedOutputDirectory;
+
+    /// <summary>
     /// Bicep <c>param</c> declarations accumulated for recipe parameter values bound to
     /// an Aspire <see cref="ParameterResource"/>. Keyed by parameter name so each is
     /// declared once; merged into the options bag at the end of <see cref="BuildAsync"/>.
@@ -103,13 +112,15 @@ internal sealed class RadiusInfrastructureBuilder
         DistributedApplicationModel model,
         ResourceTypeMapper typeMapper,
         ILogger logger,
-        RadiusGroupContext? groupContext = null)
+        RadiusGroupContext? groupContext = null,
+        string? publishedOutputDirectory = null)
     {
         _environment = environment;
         _model = model;
         _typeMapper = typeMapper;
         _logger = logger;
         _groupContext = groupContext;
+        _publishedOutputDirectory = publishedOutputDirectory;
     }
 
     /// <summary>
@@ -1249,9 +1260,26 @@ internal sealed class RadiusInfrastructureBuilder
                         ["key"] = consumer.Key!,
                     };
                     break;
-                default:
-                    // Terraform provider secrets and gateway TLS are not emitted here.
+                case Secrets.RadiusSecretStoreConsumerKind.TerraformProviderSecret:
+                    // Terraform provider secrets are not yet emitted (ASPIRERADIUS053). The Radius
+                    // recipeConfig.terraform.providers.<name> shape is an array of provider-config
+                    // objects that also needs a per-secret name/key the WithTerraformProviderSecret
+                    // API does not capture, so faithful emission is not possible today. Config-time
+                    // validation rejects this consumer before publish; throw defensively in case the
+                    // gate is bypassed rather than silently dropping the reference.
+                    throw new InvalidOperationException(
+                        $"Secret store '{consumer.Store.Name}' is referenced as a Terraform provider secret " +
+                        $"for provider '{consumer.Selector}', which is not yet supported. Diagnostic: ASPIRERADIUS053.");
+                case Secrets.RadiusSecretStoreConsumerKind.GatewayTls:
+                    // Gateway TLS (tls.certificateFrom) is intentionally not emitted: the integration
+                    // does not model Radius gateways yet, so there is no gateway resource to attach the
+                    // certificate reference to. The consumer is recorded (and type-validated) so the
+                    // wiring is deterministic and can be emitted once gateways are modeled. See README
+                    // "Known limitations".
                     break;
+                default:
+                    throw new InvalidOperationException(
+                        $"Unknown secret-store consumer kind '{consumer.Kind}' for store '{consumer.Store.Name}'.");
             }
         }
 
@@ -1288,6 +1316,10 @@ internal sealed class RadiusInfrastructureBuilder
     /// in-group <c>.id</c> expression, or its fully-qualified UCP ID when the store is routed to a
     /// different group (FR-012, FR-014).
     /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// The store is neither emitted in this group nor resolvable as a cross-group reference
+    /// (<c>ASPIRERADIUS050</c>).
+    /// </exception>
     private object ResolveSecretStoreReference(
         RadiusSecretStoreResource store,
         IReadOnlyDictionary<string, RadiusSecretStoreConstruct> storeConstructs)
@@ -1303,7 +1335,14 @@ internal sealed class RadiusInfrastructureBuilder
             return reference.ToUcpResourceId("Applications.Core/secretStores", store.Name);
         }
 
-        return store.Name;
+        // Never fall back to the bare store name: that emits a plain string where a secret-store
+        // `.id` / UCP resource ID is expected, producing a reference Radius rejects only at deploy
+        // (or, worse, that silently resolves to nothing). Fail fast with an actionable diagnostic
+        // naming the consuming environment and the unresolved store so the author can route it.
+        throw new InvalidOperationException(
+            $"Environment '{_environment.Name}' references secret store '{store.Name}', but that store is neither " +
+            "emitted in this group nor routed to a resolvable group. Ensure the store is declared and, in grouped " +
+            "mode, routed with WithRadiusResourceGroup(...) so it resolves to a group. Diagnostic: ASPIRERADIUS050.");
     }
 
     /// <summary>
@@ -1372,10 +1411,13 @@ internal sealed class RadiusInfrastructureBuilder
 
         // For a sealed store the underlying Secret's namespace/name come from the SealedSecret
         // manifest metadata (also the deploy-time materialization poll target); a missing or
-        // unreadable manifest fails publish with ASPIRERADIUS044.
+        // unreadable manifest fails publish with ASPIRERADIUS044. At deploy the author's source
+        // path may be absent (publish ran on another machine), so prefer the self-contained
+        // published artifact when a group output directory is known.
         if (population.HasSealedSecret)
         {
-            var metadata = SealedSecretManifest.ReadMetadata(store.Name, population.SealedManifestPath!, defaultNamespace);
+            var manifestPath = ResolveSealedManifestPath(store);
+            var metadata = SealedSecretManifest.ReadMetadata(store.Name, manifestPath, defaultNamespace);
             return $"{metadata.Namespace}/{metadata.Name}";
         }
 
@@ -1386,6 +1428,30 @@ internal sealed class RadiusInfrastructureBuilder
         }
 
         return $"{defaultNamespace}/{reference}";
+    }
+
+    /// <summary>
+    /// Resolves which SealedSecret manifest to read metadata from. During publish (no group output
+    /// directory) the author's source manifest path is used. At the deploy-time build re-run a group
+    /// output directory is set, so the self-contained published artifact
+    /// (<c>sealed-secrets/&lt;storeName&gt;/&lt;fileName&gt;</c>) is preferred when it exists — this keeps a
+    /// cross-machine <c>publish</c>-then-<c>deploy</c> working when the source manifest is not present
+    /// on the deploying machine. Falls back to the source path when the artifact is unavailable.
+    /// </summary>
+    private string ResolveSealedManifestPath(RadiusSecretStoreResource store)
+    {
+        var sourcePath = store.Population.SealedManifestPath!;
+
+        if (_publishedOutputDirectory is { Length: > 0 })
+        {
+            var artifactPath = SealedSecretArtifact.ResolvePath(_publishedOutputDirectory, store.Name, sourcePath);
+            if (File.Exists(artifactPath))
+            {
+                return artifactPath;
+            }
+        }
+
+        return sourcePath;
     }
 
     private RadiusResourceTypeConstruct CreateResourceTypeConstruct(

@@ -7,6 +7,7 @@
 #pragma warning disable ASPIREPIPELINES004
 
 using System.Diagnostics;
+using System.Text.Json;
 using Aspire.Hosting.ApplicationModel;
 using Aspire.Hosting.Pipelines;
 using Aspire.Hosting.Radius.Annotations;
@@ -157,9 +158,11 @@ internal sealed class RadiusDeploymentPipelineStep
 
         // Resolve a value for every Bicep `param` that was bound to an Aspire ParameterResource
         // during publish. The generated Bicep declares these as valueless params, so `rad deploy`
-        // must receive each one via `--parameters name=value`. Secret-bound values are collected
-        // so they can be scrubbed from the logged command and rad stdout/stderr.
-        var (parameterArgs, secretValues) = await ResolveDeployParametersAsync(cancellationToken).ConfigureAwait(false);
+        // must receive each one. Non-secret values are forwarded inline; secret-bound values are
+        // written to a secure parameters file (below) so they never appear on the command line, and
+        // are collected so they can be scrubbed from the logged command and rad stdout/stderr.
+        var parameters = await ResolveDeployParametersAsync(cancellationToken).ConfigureAwait(false);
+        var secretValues = parameters.SecretValues;
 
         var deployTask = await context.ReportingStep.CreateTaskAsync(
             $"Deploying Radius environment '{_environment.Name}' via rad deploy...",
@@ -168,6 +171,10 @@ internal sealed class RadiusDeploymentPipelineStep
         try
         {
             var stderrBuilder = new System.Text.StringBuilder();
+
+            // Materialize secret parameters to a secure file for the lifetime of this deploy only;
+            // disposed (deleted) when leaving this try block, after the process has exited.
+            using var secretParametersFile = CreateSecretParametersFile(parameters.SecretParameters);
 
             using var process = new Process();
             // Use ArgumentList rather than Arguments so the bicep path doesn't need shell-style
@@ -184,9 +191,17 @@ internal sealed class RadiusDeploymentPipelineStep
             };
             process.StartInfo.ArgumentList.Add("deploy");
             process.StartInfo.ArgumentList.Add(bicepPath);
-            foreach (var arg in parameterArgs)
+            foreach (var arg in parameters.NonSecretArgs)
             {
                 process.StartInfo.ArgumentList.Add(arg);
+            }
+
+            if (secretParametersFile is not null)
+            {
+                foreach (var arg in secretParametersFile.Args)
+                {
+                    process.StartInfo.ArgumentList.Add(arg);
+                }
             }
 
             // Mirror the credential step: log the full command but with any secret parameter
@@ -274,10 +289,11 @@ internal sealed class RadiusDeploymentPipelineStep
     /// <summary>
     /// Resolves deploy-time values for every Bicep parameter that was bound to an Aspire
     /// <see cref="ParameterResource"/> during publish (recorded on the environment via
-    /// <see cref="RadiusDeployParametersAnnotation"/>). Returns the <c>--parameters name=value</c>
-    /// argument tokens plus the set of secret values to scrub from logs.
+    /// <see cref="RadiusDeployParametersAnnotation"/>). Returns the non-secret
+    /// <c>--parameters name=value</c> tokens, the secret parameters to write to a secure
+    /// parameters file, and the set of secret values to scrub from logs.
     /// </summary>
-    private async Task<(IReadOnlyList<string> Args, IReadOnlyList<string> SecretValues)> ResolveDeployParametersAsync(
+    private async Task<DeployParameterPlan> ResolveDeployParametersAsync(
         CancellationToken cancellationToken)
     {
         var annotation = _environment.Annotations.OfType<RadiusDeployParametersAnnotation>().LastOrDefault();
@@ -285,39 +301,151 @@ internal sealed class RadiusDeploymentPipelineStep
     }
 
     /// <summary>
-    /// Builds the deterministic <c>--parameters name=value</c> tokens for a set of Bicep-param →
-    /// <see cref="ParameterResource"/> bindings and collects the secret values to scrub from logs.
-    /// Shared by the single-environment and per-group deploy paths (FR-013, SC-008).
+    /// Builds the deploy parameter plan for a set of Bicep-param → <see cref="ParameterResource"/>
+    /// bindings. Non-secret parameters are forwarded inline as <c>--parameters name=value</c>; secret
+    /// parameters are collected so they can be written to a secure ARM JSON parameters file passed as
+    /// <c>--parameters @&lt;file&gt;</c>, keeping secret values off the process command line (so they
+    /// are not exposed via <c>ps</c>/<c>/proc/&lt;pid&gt;/cmdline</c> to other users while <c>rad</c>
+    /// runs). Shared by the single-environment and per-group deploy paths (FR-013, SC-008).
     /// </summary>
-    private static async Task<(IReadOnlyList<string> Args, IReadOnlyList<string> SecretValues)> BuildParameterArgsAsync(
+    private static async Task<DeployParameterPlan> BuildParameterArgsAsync(
         IReadOnlyDictionary<string, ParameterResource>? bindings,
         CancellationToken cancellationToken)
     {
         if (bindings is null || bindings.Count == 0)
         {
-            return (Array.Empty<string>(), Array.Empty<string>());
+            return DeployParameterPlan.Empty;
         }
 
-        var args = new List<string>();
+        var nonSecretArgs = new List<string>();
+        var secretParameters = new Dictionary<string, string>(StringComparer.Ordinal);
         var secretValues = new List<string>();
 
-        // Order by identifier for deterministic command construction (stable logs and tests).
+        // Order by identifier for deterministic command/file construction (stable logs and tests).
         foreach (var (identifier, parameter) in bindings.OrderBy(static p => p.Key, StringComparer.Ordinal))
         {
             var value = await parameter.GetValueAsync(cancellationToken).ConfigureAwait(false) ?? string.Empty;
 
-            // `rad deploy` accepts repeated `--parameters name=value` flags. The name/value pair is
-            // a single token so paths/values with spaces survive via ArgumentList verbatim.
-            args.Add("--parameters");
-            args.Add($"{identifier}={value}");
-
-            if (parameter.Secret && !string.IsNullOrWhiteSpace(value))
+            if (parameter.Secret)
             {
-                secretValues.Add(value);
+                // Route secret values through the ARM JSON parameters file, never onto argv.
+                secretParameters[identifier] = value;
+                if (!string.IsNullOrWhiteSpace(value))
+                {
+                    secretValues.Add(value);
+                }
+            }
+            else
+            {
+                // Non-secret values are safe inline. `rad deploy` accepts repeated `--parameters
+                // name=value` flags; the name/value pair is a single token so paths/values with
+                // spaces survive via ArgumentList verbatim.
+                nonSecretArgs.Add("--parameters");
+                nonSecretArgs.Add($"{identifier}={value}");
             }
         }
 
-        return (args, secretValues);
+        return new DeployParameterPlan(nonSecretArgs, secretParameters, secretValues);
+    }
+
+    /// <summary>
+    /// Writes <paramref name="secretParameters"/> to a securely created temporary ARM JSON
+    /// parameters file and returns a disposable handle carrying the <c>--parameters @&lt;file&gt;</c>
+    /// tokens. Returns <see langword="null"/> when there are no secret parameters. The caller MUST
+    /// dispose the handle after the <c>rad</c> process exits so the file is deleted promptly.
+    /// </summary>
+    private static SecretParametersFile? CreateSecretParametersFile(IReadOnlyDictionary<string, string> secretParameters)
+    {
+        if (secretParameters.Count == 0)
+        {
+            return null;
+        }
+
+        // CreateTempSubdirectory creates an owner-only directory (0700 on Unix; user-scoped ACL on
+        // Windows), so the secret parameters file is not world-readable while `rad` reads it.
+        var directory = Directory.CreateTempSubdirectory("aspire-radius-params-");
+        var path = Path.Combine(directory.FullName, "parameters.json");
+
+        File.WriteAllText(path, BuildSecretParametersJson(secretParameters));
+
+        return new SecretParametersFile(directory, ["--parameters", "@" + path]);
+    }
+
+    /// <summary>
+    /// Builds the ARM JSON parameter-file body for <paramref name="secretParameters"/> consumed by
+    /// <c>rad deploy --parameters @&lt;file&gt;</c>:
+    /// <c>{ "$schema": "...", "contentVersion": "1.0.0.0", "parameters": { "&lt;name&gt;": { "value": "&lt;v&gt;" } } }</c>.
+    /// https://learn.microsoft.com/azure/azure-resource-manager/templates/parameter-files
+    /// </summary>
+    internal static string BuildSecretParametersJson(IReadOnlyDictionary<string, string> secretParameters)
+    {
+        // Order by name for deterministic output (stable snapshots and tests).
+        var parametersNode = new Dictionary<string, object>(StringComparer.Ordinal);
+        foreach (var (name, value) in secretParameters.OrderBy(static p => p.Key, StringComparer.Ordinal))
+        {
+            parametersNode[name] = new Dictionary<string, object> { ["value"] = value };
+        }
+
+        var root = new Dictionary<string, object>
+        {
+            ["$schema"] = "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+            ["contentVersion"] = "1.0.0.0",
+            ["parameters"] = parametersNode,
+        };
+
+        return JsonSerializer.Serialize(root, s_secretParametersJsonOptions);
+    }
+
+    private static readonly JsonSerializerOptions s_secretParametersJsonOptions = new() { WriteIndented = true };
+
+    /// <summary>
+    /// The resolved deploy parameters: non-secret <c>--parameters name=value</c> tokens, secret
+    /// parameters to materialize in a secure parameters file, and secret values for log redaction.
+    /// </summary>
+    internal sealed record DeployParameterPlan(
+        IReadOnlyList<string> NonSecretArgs,
+        IReadOnlyDictionary<string, string> SecretParameters,
+        IReadOnlyList<string> SecretValues)
+    {
+        internal static DeployParameterPlan Empty { get; } = new(
+            Array.Empty<string>(),
+            new Dictionary<string, string>(StringComparer.Ordinal),
+            Array.Empty<string>());
+    }
+
+    /// <summary>
+    /// A disposable handle to a temporary ARM JSON parameters file holding secret parameter values.
+    /// Deleting the containing directory on <see cref="Dispose"/> removes the secret material from
+    /// disk as soon as the deploy process has exited.
+    /// </summary>
+    private sealed class SecretParametersFile : IDisposable
+    {
+        private readonly DirectoryInfo _directory;
+
+        internal SecretParametersFile(DirectoryInfo directory, IReadOnlyList<string> args)
+        {
+            _directory = directory;
+            Args = args;
+        }
+
+        /// <summary>The <c>--parameters @&lt;file&gt;</c> tokens to append to the <c>rad deploy</c> arguments.</summary>
+        internal IReadOnlyList<string> Args { get; }
+
+        public void Dispose()
+        {
+            try
+            {
+                _directory.Delete(recursive: true);
+            }
+            catch (IOException)
+            {
+                // Best-effort cleanup: the temp directory is owner-only and under the OS temp root,
+                // which is reclaimed by the OS. Do not fail the deploy if deletion races or is denied.
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+        }
     }
 
     /// <summary>
@@ -342,6 +470,7 @@ internal sealed class RadiusDeploymentPipelineStep
         IReadOnlyList<string> GroupCreateArguments,
         IReadOnlyList<string> EnvCreateArguments,
         IReadOnlyList<string> DeployArguments,
+        IReadOnlyDictionary<string, string> SecretParameters,
         IReadOnlyList<string> SecretValues);
 
     /// <summary>
@@ -391,13 +520,18 @@ internal sealed class RadiusDeploymentPipelineStep
             var environmentArg = groupContext.CrossGroupEnvironmentId ?? environment.Name;
 
             // Resolve this group's recipe-parameter bindings from its own bicep so every valueless
-            // Bicep param is forwarded via --parameters, with secret values collected for redaction.
-            var builder = new RadiusInfrastructureBuilder(environment, model, typeMapper, logger, groupContext);
+            // Bicep param is forwarded — non-secret values inline, secret values via a secure
+            // parameters file materialized around the actual deploy exec (never during planning).
+            // Pass the published group output directory so sealed-store metadata is read from the
+            // self-contained published artifact rather than the author's source manifest path, which
+            // may be absent when deploying on a different machine than the one that published.
+            var groupOutputDir = Path.Combine(rootOutputDir, "groups", group);
+            var builder = new RadiusInfrastructureBuilder(environment, model, typeMapper, logger, groupContext, groupOutputDir);
             var options = await builder.BuildAsync(executionContext, cancellationToken).ConfigureAwait(false);
-            var (parameterArgs, secretValues) = await BuildParameterArgsAsync(
+            var parameters = await BuildParameterArgsAsync(
                 options.RecipeParameterBindings, cancellationToken).ConfigureAwait(false);
 
-            var bicepPath = Path.Combine(rootOutputDir, "groups", group, "app.bicep");
+            var bicepPath = Path.Combine(groupOutputDir, "app.bicep");
 
             var groupCreateArgs = new List<string> { "group", "create", group };
             if (!string.IsNullOrEmpty(workspace))
@@ -453,9 +587,10 @@ internal sealed class RadiusDeploymentPipelineStep
                 deployArgs.Add("--workspace");
                 deployArgs.Add(workspace);
             }
-            deployArgs.AddRange(parameterArgs);
+            deployArgs.AddRange(parameters.NonSecretArgs);
 
-            commands.Add(new RadGroupDeployCommand(group, groupCreateArgs, envCreateArgs, deployArgs, secretValues));
+            commands.Add(new RadGroupDeployCommand(
+                group, groupCreateArgs, envCreateArgs, deployArgs, parameters.SecretParameters, parameters.SecretValues));
         }
 
         return commands;
@@ -520,15 +655,24 @@ internal sealed class RadiusDeploymentPipelineStep
                     context).ConfigureAwait(false);
             }
 
-            // Exactly one rad deploy per group (FR-012).
-            await RunRadProcessAsync(
-                rootOutputDir,
-                command.DeployArguments,
-                command.SecretValues,
-                $"Deploying Radius resource group '{command.Group}' via rad deploy...",
-                $"Radius deployment complete for group '{command.Group}'",
-                AlreadyExistsScope.None,
-                context).ConfigureAwait(false);
+            // Exactly one rad deploy per group (FR-012). Secret parameters are materialized to a
+            // secure file for the lifetime of this group's deploy only, then deleted; secret values
+            // never reach the process command line.
+            using (var secretParametersFile = CreateSecretParametersFile(command.SecretParameters))
+            {
+                IReadOnlyList<string> deployArguments = secretParametersFile is null
+                    ? command.DeployArguments
+                    : [.. command.DeployArguments, .. secretParametersFile.Args];
+
+                await RunRadProcessAsync(
+                    rootOutputDir,
+                    deployArguments,
+                    command.SecretValues,
+                    $"Deploying Radius resource group '{command.Group}' via rad deploy...",
+                    $"Radius deployment complete for group '{command.Group}'",
+                    AlreadyExistsScope.None,
+                    context).ConfigureAwait(false);
+            }
         }
     }
 

@@ -109,23 +109,6 @@ public sealed class RadiusEnvironmentResource : Resource, IComputeEnvironmentRes
     public string Namespace { get; set; } = "default";
 
     /// <summary>
-    /// When <see langword="true"/>, the publisher emits container workloads as
-    /// <c>Applications.Core/containers@2023-10-01-preview</c> (legacy) parented
-    /// to the legacy application, instead of <c>Radius.Compute/containers</c>
-    /// (UDT). This is a fallback for Radius installs that do not have a recipe
-    /// registered for the <c>Radius.Compute/containers</c> UDT, since legacy
-    /// containers ship with built-in Kubernetes deployment behaviour and do
-    /// not require a recipe. When <see langword="true"/> and there are no UDT
-    /// resource-type instances, the UDT environment / application / recipe
-    /// pack chain is skipped entirely, producing pure-legacy Bicep that
-    /// older Radius installs can deploy without modification. Defaults to
-    /// <see langword="false"/>. Set via <c>WithLegacyContainers()</c>; the
-    /// setter is intentionally <c>internal</c> so the builder extension is
-    /// the single public surface for opting in.
-    /// </summary>
-    public bool UseLegacyContainers { get; internal set; }
-
-    /// <summary>
     /// Gets or sets the parent compute environment this Radius environment is hosted by, when
     /// the Radius env is itself a child of a higher-level compute environment (e.g. an Azure
     /// AKS environment that wraps both Kubernetes and Radius). When set, resources that target

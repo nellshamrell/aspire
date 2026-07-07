@@ -84,34 +84,6 @@ public static partial class RadiusExtensions
     private static partial Regex DnsLabelPattern();
 
     /// <summary>
-    /// Opts the environment into emitting container workloads as legacy
-    /// <c>Applications.Core/containers@2023-10-01-preview</c> resources instead
-    /// of <c>Radius.Compute/containers</c> (UDT). The legacy container type
-    /// ships with built-in Kubernetes deployment behaviour, so it deploys
-    /// without requiring a recipe to be registered in the target Radius
-    /// environment. Use this fallback when the target install does not yet
-    /// have a recipe registered for the <c>Radius.Compute/containers</c> UDT.
-    /// </summary>
-    /// <ats-summary>Emits container workloads as legacy Applications.Core/containers instead of Radius.Compute/containers.</ats-summary>
-    /// <param name="builder">The Radius environment resource builder.</param>
-    /// <returns>A reference to the <see cref="IResourceBuilder{RadiusEnvironmentResource}"/>.</returns>
-    /// <remarks>
-    /// Transitional escape hatch. Marked <see cref="ExperimentalAttribute"/> because
-    /// the API will be marked <see cref="ObsoleteAttribute"/> and eventually removed
-    /// once the <c>Radius.Compute/containers</c> UDT recipe is broadly available in
-    /// shipped Radius installs.
-    /// </remarks>
-    [Experimental("ASPIRERADIUS001", UrlFormat = "https://aka.ms/aspire/diagnostics/{0}")]
-    [AspireExport]
-    public static IResourceBuilder<RadiusEnvironmentResource> WithLegacyContainers(
-        this IResourceBuilder<RadiusEnvironmentResource> builder)
-    {
-        ArgumentNullException.ThrowIfNull(builder);
-        builder.Resource.UseLegacyContainers = true;
-        return builder;
-    }
-
-    /// <summary>
     /// Associates a pre-built container image reference with a project resource so the
     /// Aspire.Hosting.Radius publisher can emit a valid Radius container manifest for it.
     /// </summary>

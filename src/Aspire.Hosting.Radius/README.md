@@ -2,7 +2,20 @@
 
 Provides extensions and resource definitions for an Aspire AppHost to publish and deploy applications to a [Radius](https://radapp.io) compute environment.
 
+`AddRadiusEnvironment` is an Aspire **compute environment**, the same kind of building block as
+`AddKubernetesEnvironment`, `AddDockerComposeEnvironment`, and `AddAzureContainerAppEnvironment`.
+Add it to your AppHost, keep your existing resource graph unchanged, and drive it with the standard
+`aspire run` / `aspire publish` / `aspire deploy` lifecycle — Radius becomes just another target you
+deploy to, with no changes to how you declare `AddContainer`, `AddProject`, `AddRedis`, and friends.
+
 > **Preview / prototype.** This integration is an early prototype. The public API surface and the generated Bicep contract may change in future versions. Pin the integration version in `AppHost.csproj` and avoid taking dependencies on any internal types.
+
+This README is layered by intent:
+
+* **Getting started** — the happy path: add the environment, run, publish, deploy.
+* **Deploying to a cloud** — Azure/AWS providers and credentials.
+* **Production & platform features** — secret stores, multiple resource groups, resource/recipe customization.
+* **Reference** — supported resources, diagnostics, and known limitations.
 
 ## Getting started
 
@@ -21,30 +34,38 @@ In your AppHost project, install the Aspire Radius Hosting library with [NuGet](
 dotnet add package Aspire.Hosting.Radius
 ```
 
-## Usage example
+## Quick start
 
-Then, in the _AppHost.cs_ file of `AppHost`, add the environment:
+In the _AppHost.cs_ file of `AppHost`, add the environment:
 
 ```csharp
 builder.AddRadiusEnvironment("radius");
 ```
 
-`aspire publish` generates `app.bicep` plus a `bicepconfig.json` pinned to the Radius extension version, and `aspire deploy` invokes `rad deploy` against the file:
+That single line is all you add — your existing resource declarations stay the same. The integration
+hooks the three standard Aspire CLI verbs:
+
+| Command | What happens |
+|---------|--------------|
+| `aspire run` | Attaches Radius annotations to your resources so they appear in the Aspire dashboard during local development. |
+| `aspire publish` | Generates `app.bicep` plus a `bicepconfig.json` pinned to the Radius extension version. |
+| `aspire deploy` | Invokes `rad deploy` against the generated Bicep — no direct `rad` knowledge needed for the happy path. |
+
+Publish and deploy:
 
 ```shell
 aspire publish -o radius-artifacts
 aspire deploy
 ```
 
-## Supported resources
+### Radius in the Aspire dashboard
 
-* `AddContainer(...)` — published as a Radius container workload (`Radius.Compute/containers`).
-* `AddProject<T>(...)` — published as a Radius container workload only when the project has a pre-built image attached with `WithContainerImage("<registry>/<image>:<tag>")`. Without one, `aspire publish` fails with a remediation message to build and push an image the cluster can pull.
-* Selected resources with a Radius mapping (e.g. Redis, MongoDB, RabbitMQ, Dapr building blocks) emit Radius "legacy" types via the resource type mapper. Child database resources (for example `AddSqlServer("sql").AddDatabase("appdb")`) are collapsed onto the parent today.
+Because Radius is a first-class compute environment, `aspire run` surfaces your Radius-targeted
+resources in the same Aspire dashboard you already use — no extra setup. You get the resource graph,
+logs, and health for your app while iterating locally, then publish/deploy the identical model to a
+cluster.
 
-Other Aspire resource types are not emitted; only the resources listed above appear in the generated Bicep.
-
-## Multiple compute environments
+### Multiple compute environments
 
 When the model contains more than one compute environment (for example a Radius environment alongside a Kubernetes one), explicitly assign each resource to the environment that should publish it:
 
@@ -58,7 +79,12 @@ builder.AddContainer("api", "myorg/api", "1.0")
 
 Untargeted resources surface a clear error from the core pipeline instead of being silently claimed by one environment.
 
-## Cloud providers
+## Deploying to a cloud
+
+Everything above works against a plain Kubernetes cluster with Radius installed. To target Azure
+and/or AWS resources, configure the providers in the AppHost.
+
+### Cloud providers
 
 Configure Azure and/or AWS cloud providers directly in the AppHost. The publisher
 emits `properties.providers.azure.scope` / `providers.aws.scope` on the
@@ -100,7 +126,12 @@ credential-registration path.
 
 See [specs/003-cloud-providers/quickstart.md](../../../specs/003-cloud-providers/quickstart.md) for an end-to-end walkthrough.
 
-## Multiple resource groups
+## Production & platform features
+
+The features below are power/enterprise capabilities for platform teams. They are opt-in and not
+needed for a standard single-app deploy — reach for them when your topology demands it.
+
+### Multiple resource groups
 
 > **Experimental** — `WithRadiusResourceGroup` is gated by `ASPIRERADIUS005`. Suppress the
 > diagnostic (`#pragma warning disable ASPIRERADIUS005`) to opt in.
@@ -146,7 +177,7 @@ Key behaviours:
 See [specs/007-multi-resource-groups/quickstart.md](../../../specs/007-multi-resource-groups/quickstart.md)
 for an end-to-end walkthrough.
 
-## Secret management
+### Secret management
 
 > **Experimental** — the secret-store APIs are gated by `ASPIRERADIUS006`. Suppress the
 > diagnostic (`#pragma warning disable ASPIRERADIUS006`) to opt in.
@@ -185,7 +216,17 @@ radius.WithSecretStore("db-creds", RadiusSecretStoreType.BasicAuthentication, s 
   `WithTerraformProviderSecret` / `WithRecipeEnvironmentSecret`, referenced by the store's
   fully-qualified UCP secret-store ID.
 
-## Diagnostics
+## Reference
+
+### Supported resources
+
+* `AddContainer(...)` — published as a Radius container workload (`Radius.Compute/containers`).
+* `AddProject<T>(...)` — published as a Radius container workload only when the project has a pre-built image attached with `WithContainerImage("<registry>/<image>:<tag>")`. Without one, `aspire publish` fails with a remediation message to build and push an image the cluster can pull.
+* Selected resources with a Radius mapping (e.g. Redis, MongoDB, RabbitMQ, Dapr building blocks) emit Radius "legacy" types via the resource type mapper. Child database resources (for example `AddSqlServer("sql").AddDatabase("appdb")`) are collapsed onto the parent today.
+
+Other Aspire resource types are not emitted; only the resources listed above appear in the generated Bicep.
+
+### Diagnostics
 
 The package uses the `ASPIRERADIUS` diagnostic prefix for two distinct mechanisms, with
 disjoint numeric ranges reserved so the IDs never collide:
@@ -243,7 +284,7 @@ Runtime validation codes:
 
 For native `Radius.*` types, recipe parameters are configured at the environment/type scope; per-instance recipe parameters are rejected with `ASPIRERADIUS027`, and environment/type-scoped values override the recipe's intrinsic parameters. The per-resource-over-type-over-environment precedence applies only to legacy `Applications.*` types.
 
-## Known limitations
+### Known limitations
 
 * For `ASPIRERADIUS011`, AWS access-key credential conflicts are compared by the Aspire parameter name that supplies the access-key ID, not by the resolved access-key value. Two environments that use different parameter names for the same key can be flagged as a false conflict, while the same parameter name with different values is not flagged.
 * `WithTerraformProviderSecret` is not yet supported: the Radius `recipeConfig.terraform.providers.<name>` schema is an array of objects that the Bicep post-processor cannot currently emit, and the API does not capture the provider secret's name/key. Calls fail with `ASPIRERADIUS053` until provider-secret emission is modeled.

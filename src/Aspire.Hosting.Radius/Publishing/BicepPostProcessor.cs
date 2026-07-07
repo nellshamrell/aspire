@@ -70,11 +70,6 @@ internal static partial class BicepPostProcessor
             infra.Add(resource);
         }
 
-        foreach (var resource in options.LegacyContainers)
-        {
-            infra.Add(resource);
-        }
-
         // Applications.Core/secretStores declared via AddRadiusSecretStore / WithSecretStore.
         foreach (var resource in options.SecretStores)
         {

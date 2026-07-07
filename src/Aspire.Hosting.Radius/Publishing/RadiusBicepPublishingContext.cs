@@ -110,7 +110,7 @@ internal sealed class RadiusBicepPublishingContext
 
             var resourceCount = options.Environments.Count + options.Applications.Count
                 + options.RecipePacks.Count + options.ResourceTypeInstances.Count
-                + options.Containers.Count + options.LegacyContainers.Count;
+                + options.Containers.Count;
 
             logger.LogInformation(
                 "Built Radius infrastructure AST with {ResourceCount} resources for environment '{EnvironmentName}'",

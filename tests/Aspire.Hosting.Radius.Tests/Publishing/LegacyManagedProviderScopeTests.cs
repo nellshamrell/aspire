@@ -1,8 +1,6 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
-#pragma warning disable ASPIRERADIUS001 // WithLegacyContainers is a transitional experimental API.
-
 using Aspire.Hosting.ApplicationModel;
 using Aspire.Hosting.Radius.CloudProviders;
 using Aspire.Hosting.Radius.Publishing;
@@ -12,9 +10,9 @@ using Microsoft.Extensions.DependencyInjection;
 namespace Aspire.Hosting.Radius.Tests.Publishing;
 
 /// <summary>
-/// A pure-legacy publish (only legacy <c>Applications.*</c> backing resources and
-/// legacy containers, no UDT chain) must still emit the cloud provider scopes on the
-/// legacy environment so a cloud-managed legacy resource can be resolved at deploy time.
+/// A pure-legacy publish (only legacy <c>Applications.*</c> backing resources,
+/// no UDT chain) must still emit the cloud provider scopes on the legacy
+/// environment so a cloud-managed legacy resource can be resolved at deploy time.
 /// </summary>
 public class LegacyManagedProviderScopeTests
 {
@@ -37,13 +35,12 @@ public class LegacyManagedProviderScopeTests
     {
         using var builder = TestDistributedApplicationBuilder.Create(DistributedApplicationOperation.Publish);
         var env = builder.AddRadiusEnvironment("myenv")
-            .WithAzureProvider(Sub, Rg, azure => azure.WithWorkloadIdentity(Tenant, Client))
-            .WithLegacyContainers();
+            .WithAzureProvider(Sub, Rg, azure => azure.WithWorkloadIdentity(Tenant, Client));
 
+        // The legacy-only chain is forced by a cloud-managed legacy backing resource
+        // (a Redis marked via WithManagedResource), not by any removed container API.
         var cache = builder.AddRedis("cache");
         env.WithManagedResource(cache, RadiusCloud.Azure, new RadiusRecipe { RecipeLocation = AzureRedisRecipe });
-
-        builder.AddContainer("api", "myapp/api", "latest").WithReference(cache);
 
         using var app = builder.Build();
         var bicep = GenerateBicep(app);

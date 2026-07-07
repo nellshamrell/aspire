@@ -113,8 +113,8 @@ public class BicepGenerationSimpleTests
     {
         // The Radius.Compute/containers v2 schema requires properties.environment so the
         // control plane can resolve the recipe pack that provisions the container. Without
-        // it, shipped Radius cannot deploy the native container (it was the gap that forced
-        // the WithLegacyContainers() fallback).
+        // it, shipped Radius cannot deploy the native container (this was the gap that
+        // previously blocked the native path on older Radius installs).
         using var builder = TestDistributedApplicationBuilder.Create(DistributedApplicationOperation.Publish);
         builder.AddRadiusEnvironment("myenv");
         builder.AddContainer("api", "myapp/api", "latest");

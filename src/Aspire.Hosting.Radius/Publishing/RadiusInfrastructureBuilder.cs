@@ -373,10 +373,11 @@ internal sealed class RadiusInfrastructureBuilder
             }
         }
 
-        // 3. Legacy parents are emitted lazily — only if any legacy resource is
-        // present, or the env opts into legacy containers. Legacy env/app share
-        // the *resource name* with the UDT pair so Radius still sees them as
-        // the same logical app/environment; only the Bicep identifiers differ.
+        // 3. Legacy parents are emitted lazily — only if any legacy backing
+        // resource, secret store, or secret-store consumer is present. Legacy
+        // env/app share the *resource name* with the UDT pair so Radius still
+        // sees them as the same logical app/environment; only the Bicep
+        // identifiers differ.
         LegacyApplicationEnvironmentConstruct? legacyEnvConstruct = null;
         LegacyApplicationConstruct? legacyAppConstruct = null;
 

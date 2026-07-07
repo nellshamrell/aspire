@@ -1,12 +1,13 @@
-# Aspire.Hosting.Radius library
+# Radius hosting integration
 
-Provides extensions and resource definitions for an Aspire AppHost to publish and deploy applications to a [Radius](https://radapp.io) compute environment.
+Use this integration to publish and deploy an Aspire AppHost's applications to a [Radius](https://radapp.io) compute environment.
 
 `AddRadiusEnvironment` is an Aspire **compute environment**, the same kind of building block as
 `AddKubernetesEnvironment`, `AddDockerComposeEnvironment`, and `AddAzureContainerAppEnvironment`.
-Add it to your AppHost, keep your existing resource graph unchanged, and drive it with the standard
-`aspire run` / `aspire publish` / `aspire deploy` lifecycle — Radius becomes just another target you
+Add it to your AppHost, keep your existing resource graph unchanged, and target it with the standard
+`aspire publish` / `aspire deploy` lifecycle — Radius becomes just another target you
 deploy to, with no changes to how you declare `AddContainer`, `AddProject`, `AddRedis`, and friends.
+Radius participates only at publish/deploy time; `aspire run` continues to run your app locally as usual.
 
 > **Preview / prototype.** This integration is an early prototype. The public API surface and the generated Bicep contract may change in future versions. Pin the integration version in `AppHost.csproj` and avoid taking dependencies on any internal types.
 
@@ -26,28 +27,36 @@ This README is layered by intent:
 * The `rad` CLI on PATH. Version must match the pinned Radius Bicep extension this integration emits (currently `0.59`). Run `rad version` to check.
 * `rad init` has been run against the target cluster so the workspace and environment exist.
 
-### Install the package
+### Add the integration
 
-In your AppHost project, install the Aspire Radius Hosting library with [NuGet](https://www.nuget.org):
+From your AppHost directory, add the `Aspire.Hosting.Radius` integration with the Aspire CLI:
 
-```dotnetcli
-dotnet add package Aspire.Hosting.Radius
+```bash
+aspire add Aspire.Hosting.Radius
 ```
 
 ## Quick start
 
 In the _AppHost.cs_ file of `AppHost`, add the environment:
 
+**C#**
+
 ```csharp
 builder.AddRadiusEnvironment("radius");
 ```
 
-That single line is all you add — your existing resource declarations stay the same. The integration
-hooks the three standard Aspire CLI verbs:
+**TypeScript**
+
+```typescript
+await builder.addRadiusEnvironment("radius");
+```
+
+That single line is all you add — your existing resource declarations stay the same. The standard
+Aspire lifecycle still works; Radius participates only in publish and deploy:
 
 | Command | What happens |
 |---------|--------------|
-| `aspire run` | Attaches Radius annotations to your resources so they appear in the Aspire dashboard during local development. |
+| `aspire run` | Runs your app locally as usual. Radius does no run-mode wiring — the Radius environment is inert during local development and takes effect only at publish/deploy. |
 | `aspire publish` | Generates `app.bicep` plus a `bicepconfig.json` pinned to the Radius extension version. |
 | `aspire deploy` | Invokes `rad deploy` against the generated Bicep — no direct `rad` knowledge needed for the happy path. |
 
@@ -58,12 +67,13 @@ aspire publish -o radius-artifacts
 aspire deploy
 ```
 
-### Radius in the Aspire dashboard
+### Local development with `aspire run`
 
-Because Radius is a first-class compute environment, `aspire run` surfaces your Radius-targeted
-resources in the same Aspire dashboard you already use — no extra setup. You get the resource graph,
-logs, and health for your app while iterating locally, then publish/deploy the identical model to a
-cluster.
+Radius is a publish/deploy-only target: `aspire run` builds and runs your app locally exactly as it
+would without Radius, using the normal Aspire dashboard for your resources. The Radius environment
+does not attach annotations or alter your resources during local development — Radius wiring happens
+when you `aspire publish` / `aspire deploy`. You iterate locally as usual, then publish/deploy the
+same application resources to a cluster.
 
 ### Multiple compute environments
 
@@ -292,6 +302,7 @@ For native `Radius.*` types, recipe parameters are configured at the environment
 
 ## Additional documentation
 
+* https://aspire.dev/integrations/gallery/
 * https://docs.radapp.io/
 * https://aspire.dev/
 

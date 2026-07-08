@@ -21,8 +21,17 @@ namespace Aspire.Hosting.Radius.Publishing;
 /// Radius workspace via <c>rad credential register</c> before
 /// <see cref="RadiusDeploymentPipelineStep"/> runs. Secret values supplied
 /// through <see cref="ParameterResource"/> are resolved at execution time
-/// and forwarded directly to the CLI argument list — they are never
-/// written to the publish artifact and are redacted from log output.
+/// and passed to the CLI — they are never written to the publish artifact
+/// and are redacted from this step's log output.
+/// <para>
+/// <b>Security note:</b> <c>rad credential register</c> exposes no stdin/file/env
+/// input for secrets, so the resolved values are passed as command-line arguments.
+/// While <c>rad</c> runs, they are therefore visible to other users on the same host
+/// via the process table (<c>ps</c> / <c>/proc/&lt;pid&gt;/cmdline</c>). Log redaction
+/// does not mitigate this local, transient exposure. This differs from
+/// <see cref="RadiusDeploymentPipelineStep"/>, which keeps deploy-time secrets off the
+/// command line by writing them to an owner-only temporary parameters file.
+/// </para>
 /// A non-zero <c>rad</c> exit aborts the entire deploy pipeline
 /// (FR-010, FR-010a, FR-010b).
 /// </summary>
@@ -262,6 +271,10 @@ internal sealed class RadCredentialRegisterStep
         };
         foreach (var a in args)
         {
+            // SECURITY: `rad credential register` accepts secrets only as CLI arguments (no
+            // stdin/file/env input), so resolved secret values land on argv here and are briefly
+            // visible to other local users via `ps` / `/proc/<pid>/cmdline` while `rad` runs.
+            // See the class-level security note. Redaction below only covers this step's logs.
             process.StartInfo.ArgumentList.Add(a);
         }
 
@@ -288,7 +301,30 @@ internal sealed class RadCredentialRegisterStep
         process.Start();
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
-        await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+
+        try
+        {
+            await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // Terminate the child on cancellation; otherwise `using var process` only disposes
+            // the handle and leaves an orphaned `rad` process running (mirrors the deploy step).
+            if (!process.HasExited)
+            {
+                logger.LogWarning("Cancellation requested — terminating rad credential register process.");
+                try
+                {
+                    process.Kill(entireProcessTree: true);
+                }
+                catch (InvalidOperationException)
+                {
+                    // Race: the process exited between the HasExited check and Kill. Nothing to do.
+                }
+            }
+
+            throw;
+        }
 
         if (process.ExitCode != 0)
         {

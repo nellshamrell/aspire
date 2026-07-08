@@ -60,4 +60,51 @@ public class BicepIdentifierTests
         // The connection key for a hyphenated name should be present in the output
         Assert.Contains("my-cache", bicep);
     }
+
+    [Theory]
+    [InlineData("app")]
+    [InlineData("recipepack")]
+    public void ResourceNameCollidingWithSynthesizedIdentifier_Throws_ASPIRERADIUS056(string reservedName)
+    {
+        // The publisher synthesizes constructs with the fixed Bicep identifiers 'app' and
+        // 'recipepack'. A backing resource whose (sanitized) name equals one of these produces two
+        // declarations with the same symbol; the SDK's Compile() does not detect this, so fail fast.
+        // A container is added to force the UDT chain (application + recipe pack) to be emitted.
+        using var builder = TestDistributedApplicationBuilder.Create(DistributedApplicationOperation.Publish);
+        var env = builder.AddRadiusEnvironment("myenv");
+        builder.AddRedis(reservedName);
+        builder.AddContainer("api", "myapp/api", "latest");
+
+        var ex = GenerateAndCaptureException(builder, env);
+
+        Assert.IsType<InvalidOperationException>(ex);
+        Assert.Contains("ASPIRERADIUS056", ex!.Message);
+        Assert.Contains(reservedName, ex.Message);
+    }
+
+    [Fact]
+    public void NormalGraph_GeneratesBicep_WithoutCollision()
+    {
+        // Control: distinct backing resources plus a container (forcing the UDT chain, so 'app'
+        // and 'recipepack' are also emitted) must compile without an ASPIRERADIUS056 collision.
+        using var builder = TestDistributedApplicationBuilder.Create(DistributedApplicationOperation.Publish);
+        var env = builder.AddRadiusEnvironment("myenv");
+        builder.AddRedis("cache");
+        builder.AddContainer("api", "myapp/api", "latest");
+
+        var ex = GenerateAndCaptureException(builder, env);
+
+        Assert.Null(ex);
+    }
+
+    private static Exception? GenerateAndCaptureException(
+        IDistributedApplicationBuilder builder,
+        IResourceBuilder<RadiusEnvironmentResource> env)
+    {
+        using var app = builder.Build();
+        var model = app.Services.GetRequiredService<DistributedApplicationModel>();
+        RadiusTestHelper.AttachDeploymentTargets(env.Resource, model);
+        var context = new RadiusBicepPublishingContext(env.Resource);
+        return Record.Exception(() => context.GenerateBicep(model));
+    }
 }

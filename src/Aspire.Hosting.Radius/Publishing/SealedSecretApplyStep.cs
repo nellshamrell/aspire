@@ -496,7 +496,35 @@ internal sealed class SealedSecretApplyStep
                 },
             };
             process.Start();
-            await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+
+            // Drain the redirected pipes (output discarded) so a probe that emits more than the OS
+            // pipe buffer can't block on write and hang WaitForExitAsync.
+            process.OutputDataReceived += static (_, _) => { };
+            process.ErrorDataReceived += static (_, _) => { };
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+
+            try
+            {
+                await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                if (!process.HasExited)
+                {
+                    try
+                    {
+                        process.Kill(entireProcessTree: true);
+                    }
+                    catch (InvalidOperationException)
+                    {
+                        // Race: the process exited between the HasExited check and Kill. Nothing to do.
+                    }
+                }
+
+                throw;
+            }
+
             return process.ExitCode == 0;
         }
         catch (Win32Exception)
@@ -548,7 +576,31 @@ internal sealed class SealedSecretApplyStep
         process.Start();
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
-        await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+
+        try
+        {
+            await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // Terminate the child on cancellation; otherwise `using var process` only disposes
+            // the handle and leaves an orphaned `kubectl` process running (mirrors the deploy step).
+            if (!process.HasExited)
+            {
+                logger?.LogWarning("Cancellation requested — terminating kubectl process.");
+                try
+                {
+                    process.Kill(entireProcessTree: true);
+                }
+                catch (InvalidOperationException)
+                {
+                    // Race: the process exited between the HasExited check and Kill. Nothing to do.
+                }
+            }
+
+            throw;
+        }
+
         return (process.ExitCode, stderr.ToString());
     }
 }

@@ -180,4 +180,49 @@ public class ManagedValidationTests
 
         Assert.Null(ex);
     }
+
+    [Fact]
+    public void Managed_OnContainerWithNonComputeTypeOverride_DoesNotThrow_ASPIRERADIUS022()
+    {
+        var builder = DistributedApplication.CreateBuilder();
+        var env = AzureEnv(builder);
+
+        // A plain container retargeted to a non-compute UDT via TypeOverride resolves to a Radius
+        // backing resource at publish (ResolveResourceType honors the override; ClassifyResources
+        // routes it to the radius types), so config-time validation must accept it rather than
+        // falsely rejecting it as compute — ValidateNotCompute runs before ValidateSupportedBackingResource.
+        var api = builder.AddContainer("api", "myapp/api", "latest")
+            .PublishAsRadiusResource(r => r.TypeOverride = new RadiusResourceTypeReference("MyOrg.Custom/myCache", "2025-01-01"));
+
+        var ex = Record.Exception(() =>
+            env.WithManagedResource(api, RadiusCloud.Azure, new RadiusRecipe { RecipeLocation = AzureRecipe }));
+
+        Assert.Null(ex);
+    }
+
+    [Fact]
+    public void Managed_OnProjectWithNonComputeTypeOverride_Throws_ASPIRERADIUS022()
+    {
+        var builder = DistributedApplication.CreateBuilder();
+        var env = AzureEnv(builder);
+
+        // Projects are always compute at publish — ClassifyResources classifies a ProjectResource
+        // as compute regardless of any override — so a non-compute TypeOverride must NOT let a
+        // project be marked cloud-managed. The non-compute-override bypass is scoped to non-projects.
+        var project = builder.AddProject<TestProjectMetadata>("webapp")
+            .PublishAsRadiusResource(r => r.TypeOverride = new RadiusResourceTypeReference("MyOrg.Custom/myCache", "2025-01-01"));
+
+        var ex = Assert.Throws<ArgumentException>(() =>
+            env.WithManagedResource(project, RadiusCloud.Azure, new RadiusRecipe { RecipeLocation = AzureRecipe }));
+
+        Assert.Equal("resource", ex.ParamName);
+        Assert.Contains("ASPIRERADIUS022", ex.Message);
+        Assert.Contains("webapp", ex.Message);
+    }
+
+    private sealed class TestProjectMetadata : IProjectMetadata
+    {
+        public string ProjectPath => "testproject";
+        public LaunchSettings LaunchSettings { get; } = new();
+    }
 }

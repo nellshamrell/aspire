@@ -134,7 +134,14 @@ deploy and redacts them from any logged command line. Recipe-parameter secrets b
 Aspire parameters are emitted as valueless Bicep parameters today, not delivered by this
 credential-registration path.
 
-See [specs/003-cloud-providers/quickstart.md](../../../specs/003-cloud-providers/quickstart.md) for an end-to-end walkthrough.
+> **Security note:** `rad credential register` accepts credential secrets only as command-line
+> arguments, so during registration those resolved values are briefly visible to other users on the
+> same host via the process table (`ps` / `/proc/<pid>/cmdline`). Log redaction does not mitigate
+> this local, transient exposure. Deploy-time recipe parameters do not share this concern — they are
+> written to an owner-only temporary parameters file rather than the command line.
+
+See the [Radius cloud providers documentation](https://docs.radapp.io/guides/deploy/environments/cloud-providers/)
+for an end-to-end walkthrough.
 
 ## Production & platform features
 
@@ -184,7 +191,7 @@ Key behaviours:
 - **No-group default is unchanged** — when no resource is routed to a group, publish/deploy behave
   byte-for-byte as before.
 
-See [specs/007-multi-resource-groups/quickstart.md](../../../specs/007-multi-resource-groups/quickstart.md)
+See the [Radius resource groups documentation](https://docs.radapp.io/guides/resources/)
 for an end-to-end walkthrough.
 
 ### Secret management
@@ -248,6 +255,7 @@ disjoint numeric ranges reserved so the IDs never collide:
 | `ASPIRERADIUS020`–`ASPIRERADIUS029` | Cloud-managed resource (`WithManagedResource`) and recipe/recipe-parameter validation | Thrown `ArgumentException` (config time) / `InvalidOperationException` (publish time) |
 | `ASPIRERADIUS030`–`ASPIRERADIUS039` | Multi-resource-group routing (`WithRadiusResourceGroup`) validation | Thrown `ArgumentException` (call site, e.g. empty name) / `InvalidOperationException` (fail-fast gate before publish/deploy) |
 | `ASPIRERADIUS040`–`ASPIRERADIUS055` | Secret-store (`AddRadiusSecretStore` / `WithSecretStore`) validation, publish, and deploy | Thrown `ArgumentException` (call site, e.g. empty/invalid name or key) / `InvalidOperationException` (fail-fast gate, publish, or deploy) |
+| `ASPIRERADIUS056` | Bicep generation | Thrown `InvalidOperationException` (publish) |
 
 Runtime validation codes:
 
@@ -288,6 +296,7 @@ Runtime validation codes:
 | `ASPIRERADIUS053` | Publish/Deploy gate | A store is referenced as a Terraform provider secret (`WithTerraformProviderSecret`), which is not yet supported. Remove the call until provider-secret emission is modeled. |
 | `ASPIRERADIUS054` | Config (call site) | An application-scoped store was used for gateway TLS (`WithTlsCertificate`), which requires an environment-scoped `certificate` store. Declare the store with `WithSecretStore` on an environment. |
 | `ASPIRERADIUS055` | Publish/Deploy gate | An application-scoped `FromExistingSecret` store uses a bare `<name>` reference. Application-scoped stores have no owning environment to default the namespace from; use a fully-qualified `<namespace>/<name>` reference. |
+| `ASPIRERADIUS056` | Publish | Two emitted constructs map to the same Bicep identifier (e.g. a resource named `app` or `recipepack` colliding with a synthesized construct, or two resource names that sanitize to the same identifier such as `my-x` and `my.x`). Bicep symbols share one flat namespace; rename the conflicting resource. |
 
 > `ASPIRERADIUS021` was retired: the cloud is taken from the explicit `RadiusCloud` argument
 > rather than inferred from the recipe location, so there is no cloud/recipe conflict to flag.

@@ -842,10 +842,36 @@ internal sealed class RadiusDeploymentPipelineStep
                 UseShellExecute = false,
                 CreateNoWindow = true,
             };
-            process.StartInfo.ArgumentList.Add("version");
-
             process.Start();
-            await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+
+            // Drain the redirected pipes (output discarded) so a probe that emits more than the OS
+            // pipe buffer can't block on write and hang WaitForExitAsync.
+            process.OutputDataReceived += static (_, _) => { };
+            process.ErrorDataReceived += static (_, _) => { };
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+
+            try
+            {
+                await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                if (!process.HasExited)
+                {
+                    try
+                    {
+                        process.Kill(entireProcessTree: true);
+                    }
+                    catch (InvalidOperationException)
+                    {
+                        // Race: the process exited between the HasExited check and Kill. Nothing to do.
+                    }
+                }
+
+                throw;
+            }
+
             return process.ExitCode == 0;
         }
         catch (OperationCanceledException)

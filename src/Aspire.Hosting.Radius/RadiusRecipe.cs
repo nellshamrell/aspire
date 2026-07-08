@@ -42,13 +42,9 @@ public sealed class RadiusRecipe
     /// eventually removed once the UDT model is broadly available. The default is the empty
     /// string, which the publisher treats as <c>"default"</c> when emitting the recipe pack.
     /// </remarks>
-    /// <remarks>
-    /// Not marked <c>required</c> — CS9042 disallows combining <c>required</c> with the
-    /// <see cref="ExperimentalAttribute"/> (which the compiler treats like
-    /// <see cref="ObsoleteAttribute"/>) unless the containing type's constructors are all
-    /// experimental too. The reviewer specifically wanted only this property — not the
-    /// whole type — to carry the experimental signal.
-    /// </remarks>
+    // Not marked `required` — CS9042 disallows combining `required` with [Experimental] (which the
+    // compiler treats like [Obsolete]) unless the containing type's constructors are all experimental
+    // too. Only this property — not the whole type — should carry the experimental signal.
     [Experimental("ASPIRERADIUS002", UrlFormat = "https://aka.ms/aspire/diagnostics/{0}")]
     public string Name { get; set; } = string.Empty;
 

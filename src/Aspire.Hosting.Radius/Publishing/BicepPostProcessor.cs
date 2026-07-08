@@ -25,6 +25,14 @@ internal static partial class BicepPostProcessor
         // Validate recipe references before compiling
         ValidateRecipeReferences(options, logger);
 
+        // Every construct below is emitted into a single Bicep file, and Bicep symbolic names
+        // share one flat namespace — two `resource`/`param` declarations with the same identifier
+        // is a BCP028 error. The SDK's Compile() does NOT detect this, so it would silently emit
+        // broken Bicep that only fails later at `bicep build` / `rad deploy`. Fail fast here with
+        // an actionable diagnostic instead. Runs after ConfigureRadiusInfrastructure callbacks
+        // (which can rename/add constructs), so it validates the final emitted namespace.
+        ValidateUniqueIdentifiers(options);
+
         var infra = new RadiusResourceInfrastructure(environmentName);
 
         // Add all constructs in block order:
@@ -277,6 +285,75 @@ internal static partial class BicepPostProcessor
             BicepList<object> nestedArray => nestedArray,
             var scalar => new BicepValue<object>(scalar)
         };
+    }
+
+    private static void ValidateUniqueIdentifiers(RadiusInfrastructureOptions options)
+    {
+        // Maps each claimed Bicep identifier to a human-readable description of the construct that
+        // first claimed it, so the diagnostic can name both sides of a collision. Ordinal because
+        // Bicep identifiers are case-sensitive.
+        var seen = new Dictionary<string, string>(StringComparer.Ordinal);
+
+        void Register(string identifier, string description)
+        {
+            if (seen.TryGetValue(identifier, out var existing))
+            {
+                throw new InvalidOperationException(
+                    $"Two Radius constructs emit the same Bicep identifier '{identifier}' ({existing} and {description}). " +
+                    "Bicep symbolic names share a single flat namespace, so every emitted resource and parameter must " +
+                    "have a distinct identifier. Rename the conflicting resource — note that resource names are sanitized " +
+                    "to Bicep identifiers (e.g. 'my-x' and 'my.x' both become 'my_x'), and that the publisher reserves the " +
+                    "identifiers 'app', 'app_legacy', and 'recipepack' for its synthesized constructs. Diagnostic: ASPIRERADIUS056.");
+            }
+
+            seen[identifier] = description;
+        }
+
+        // Enumerate every collection added to the flat namespace in CompileBicep, in the same order.
+        foreach (var pack in options.RecipePacks)
+        {
+            Register(pack.BicepIdentifier, "a recipe pack");
+        }
+
+        foreach (var environment in options.Environments)
+        {
+            Register(environment.BicepIdentifier, "a Radius environment");
+        }
+
+        foreach (var application in options.Applications)
+        {
+            Register(application.BicepIdentifier, "a Radius application");
+        }
+
+        foreach (var environment in options.LegacyEnvironments)
+        {
+            Register(environment.BicepIdentifier, "a legacy environment");
+        }
+
+        foreach (var application in options.LegacyApplications)
+        {
+            Register(application.BicepIdentifier, "a legacy application");
+        }
+
+        foreach (var instance in options.ResourceTypeInstances)
+        {
+            Register(instance.BicepIdentifier, "a resource type instance");
+        }
+
+        foreach (var container in options.Containers)
+        {
+            Register(container.BicepIdentifier, "a container workload");
+        }
+
+        foreach (var store in options.SecretStores)
+        {
+            Register(store.BicepIdentifier, "a secret store");
+        }
+
+        foreach (var parameter in options.RecipeParameters.Values)
+        {
+            Register(parameter.BicepIdentifier, "a recipe parameter");
+        }
     }
 
     private static void ValidateRecipeReferences(RadiusInfrastructureOptions options, ILogger logger)

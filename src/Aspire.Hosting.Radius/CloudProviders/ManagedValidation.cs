@@ -81,6 +81,8 @@ internal static class ManagedValidation
     /// resolves to compute at publish (<c>ResolveResourceType</c> honors the override
     /// first), so reject that here too — otherwise it slips past both this rule and
     /// <c>ASPIRERADIUS025</c> and a compute workload ends up marked cloud-managed.
+    /// Conversely, a plain container retargeted to a non-compute type by an override is a
+    /// valid backing resource at publish and must NOT be rejected here.
     /// </summary>
     internal static void ValidateNotCompute(IResource target, string paramName)
     {
@@ -89,6 +91,19 @@ internal static class ManagedValidation
             .LastOrDefault()?.Customization.TypeOverride;
         var overridesToCompute = typeOverride is not null
             && string.Equals(typeOverride.Type, RadiusResourceTypes.Containers, StringComparison.Ordinal);
+        var hasNonComputeOverride = typeOverride is not null && !overridesToCompute;
+
+        // A non-compute TypeOverride retargets a plain container to a backing type, which
+        // ResolveResourceType/ClassifyResources honor at publish — so such a container is a valid
+        // backing resource, not compute, and this rule must agree (mirrors the hasNonComputeOverride
+        // handling in ValidateSupportedBackingResource, which otherwise wouldn't be reached because
+        // Validate runs ValidateNotCompute first). Projects are the exception: ClassifyResources
+        // always classifies a ProjectResource as compute regardless of any override, so a project
+        // can never be cloud-managed even with a non-compute override.
+        if (target is not ProjectResource && hasNonComputeOverride)
+        {
+            return;
+        }
 
         if (IsComputeWorkload(target) || overridesToCompute)
         {

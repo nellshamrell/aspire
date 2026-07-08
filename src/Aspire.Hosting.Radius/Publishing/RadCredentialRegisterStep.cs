@@ -32,8 +32,7 @@ namespace Aspire.Hosting.Radius.Publishing;
 /// <see cref="RadiusDeploymentPipelineStep"/>, which keeps deploy-time secrets off the
 /// command line by writing them to an owner-only temporary parameters file.
 /// </para>
-/// A non-zero <c>rad</c> exit aborts the entire deploy pipeline
-/// (FR-010, FR-010a, FR-010b).
+/// A non-zero <c>rad</c> exit aborts the entire deploy pipeline.
 /// </summary>
 internal sealed class RadCredentialRegisterStep
 {

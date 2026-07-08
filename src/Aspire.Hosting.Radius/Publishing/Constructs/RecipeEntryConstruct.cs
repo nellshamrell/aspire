@@ -35,7 +35,7 @@ public sealed class RecipeEntryConstruct : ProvisionableConstruct
 
     /// <summary>
     /// Optional recipe parameters for this entry. Populated only when the
-    /// environment declares recipe parameters (FR-004); left unassigned
+    /// environment declares recipe parameters; left unassigned
     /// otherwise so the <c>parameters</c> key is omitted from the emitted Bicep.
     /// </summary>
     public BicepDictionary<object> Parameters

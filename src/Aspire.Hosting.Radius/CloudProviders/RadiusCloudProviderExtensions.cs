@@ -30,7 +30,7 @@ public static class RadiusCloudProviderExtensions
     /// <param name="resourceGroup">Resource-group name within the subscription.</param>
     /// <param name="configure">Callback that selects a credential mode.</param>
     /// <returns>The same builder for chaining.</returns>
-    /// <exception cref="ArgumentException">Validation failed on inputs (FR-007).</exception>
+    /// <exception cref="ArgumentException">Validation failed on inputs.</exception>
     /// <exception cref="InvalidOperationException">The callback did not select a credential (ASPIRERADIUS010).</exception>
     // [AspireExportIgnore]: the callback parameter exposes the in-flight provider
     // builder interface, which Aspire's ATS exporter (ASPIREEXPORT008) doesn't
@@ -75,7 +75,7 @@ public static class RadiusCloudProviderExtensions
     /// <param name="region">AWS region code (e.g. <c>us-west-2</c>).</param>
     /// <param name="configure">Callback that selects a credential mode.</param>
     /// <returns>The same builder for chaining.</returns>
-    /// <exception cref="ArgumentException">Validation failed on inputs (FR-007).</exception>
+    /// <exception cref="ArgumentException">Validation failed on inputs.</exception>
     /// <exception cref="InvalidOperationException">The callback did not select a credential (ASPIRERADIUS010).</exception>
     [AspireExportIgnore]
     [Experimental("ASPIRERADIUS003", UrlFormat = "https://aka.ms/aspire/diagnostics/{0}")]

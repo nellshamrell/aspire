@@ -6,8 +6,8 @@ using System.Text.RegularExpressions;
 namespace Aspire.Hosting.Radius.CloudProviders;
 
 /// <summary>
-/// Lightweight syntactic validators for cloud-provider configuration inputs
-/// (FR-007). Each helper throws <see cref="ArgumentException"/> with
+/// Lightweight syntactic validators for cloud-provider configuration inputs.
+/// Each helper throws <see cref="ArgumentException"/> with
 /// <c>paramName</c> set so callers get the offending parameter in the
 /// thrown message without bespoke wrapping at every call site.
 /// </summary>

@@ -10,7 +10,7 @@ namespace Aspire.Hosting.Radius.CloudProviders;
 /// <summary>
 /// In-flight builder backing <see cref="IAwsRadiusProviderBuilder"/>. The
 /// <see cref="Credential"/> slot is mutated by each <c>With*</c> call (last
-/// write wins per FR-008) and the final value is hoisted into
+/// write wins) and the final value is hoisted into
 /// <see cref="AwsRadiusProviderConfig"/> by <c>WithAwsProvider</c>.
 /// </summary>
 internal sealed class AwsRadiusProviderBuilder : IAwsRadiusProviderBuilder

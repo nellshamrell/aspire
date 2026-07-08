@@ -18,11 +18,9 @@ internal static class RadiusTestHelper
     /// </summary>
     /// <remarks>
     /// Publishing-context unit tests construct <c>RadiusBicepPublishingContext</c>
-    /// directly and don't execute the pipeline. After the A1/A2 fix, the publishing context
-    /// is strict about only emitting resources explicitly targeted at the environment, so
-    /// tests that exercise <c>GenerateBicep</c> must mimic what the prepare step would
-    /// have done in a real run. The architectural review's finding I5 tracks replacing
-    /// this workaround with a full-pipeline integration test.
+    /// directly and don't execute the pipeline. The publishing context is strict about only
+    /// emitting resources explicitly targeted at the environment, so tests that exercise
+    /// <c>GenerateBicep</c> must mimic what the prepare step would have done in a real run.
     /// </remarks>
     public static void AttachDeploymentTargets(
         RadiusEnvironmentResource environment,

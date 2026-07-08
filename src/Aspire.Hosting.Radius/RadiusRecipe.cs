@@ -54,8 +54,7 @@ public sealed class RadiusRecipe
     /// <remarks>
     /// Emitted as <c>recipeLocation</c> on the new <c>Radius.Core/recipePacks</c> UDT, and as
     /// <c>templatePath</c> under the legacy <c>Applications.Core/environments@2023-10-01-preview</c>
-    /// inline <c>properties.recipes</c> shape. Renamed from <c>TemplatePath</c> in
-    /// 2026-04-20 to align with the shipped Radius UDT schema (breaking pre-GA change).
+    /// inline <c>properties.recipes</c> shape.
     /// </remarks>
     public string? RecipeLocation { get; set; }
 

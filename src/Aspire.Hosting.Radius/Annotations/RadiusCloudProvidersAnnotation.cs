@@ -9,10 +9,10 @@ namespace Aspire.Hosting.Radius.Annotations;
 /// <summary>
 /// Per-environment annotation that carries the configured Azure and/or AWS
 /// cloud-provider configuration set via <c>WithAzureProvider</c> /
-/// <c>WithAwsProvider</c>. The annotation is mutable and last-write-wins
-/// (FR-008): a second call to the same <c>With…Provider</c> on the same
+/// <c>WithAwsProvider</c>. The annotation is mutable and last-write-wins:
+/// a second call to the same <c>With…Provider</c> on the same
 /// environment overwrites the corresponding slot. The annotation is
-/// per-resource and is never shared between environments (FR-009).
+/// per-resource and is never shared between environments.
 /// </summary>
 internal sealed class RadiusCloudProvidersAnnotation : IResourceAnnotation
 {

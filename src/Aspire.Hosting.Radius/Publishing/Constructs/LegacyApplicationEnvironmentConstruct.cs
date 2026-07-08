@@ -90,7 +90,7 @@ public sealed class LegacyApplicationEnvironmentConstruct : ProvisionableResourc
     /// <summary>
     /// The <c>recipeConfig</c> block (<c>properties.recipeConfig</c>) carrying secret-store
     /// references for private Bicep-registry auth, Terraform Git PAT auth, and
-    /// <c>envSecrets</c>. Populated only when a secret store is consumed (FR-012).
+    /// <c>envSecrets</c>. Populated only when a secret store is consumed.
     /// </summary>
     public BicepDictionary<object> RecipeConfig
     {

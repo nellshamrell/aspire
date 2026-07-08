@@ -8,14 +8,14 @@ namespace Aspire.Hosting.Radius.CloudProviders;
 /// <summary>
 /// Builder surface exposed inside the <c>WithAzureProvider</c> callback for
 /// selecting an Azure credential mode. Exactly one <c>With*</c> method must
-/// be called; a repeat call replaces the previous selection (FR-008).
+/// be called; a repeat call replaces the previous selection.
 /// </summary>
 public interface IAzureRadiusProviderBuilder
 {
     /// <summary>
     /// Configures a Service Principal credential. The client secret value
     /// is provided via a <see cref="ParameterResource"/> so its plaintext
-    /// never appears in the publish artifact (FR-006). Reference it with
+    /// never appears in the publish artifact. Reference it with
     /// <c>builder.AddParameter("azureClientSecret", secret: true)</c>.
     /// </summary>
     /// <param name="tenantId">Azure tenant GUID.</param>

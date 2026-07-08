@@ -298,9 +298,6 @@ Runtime validation codes:
 | `ASPIRERADIUS055` | Publish/Deploy gate | An application-scoped `FromExistingSecret` store uses a bare `<name>` reference. Application-scoped stores have no owning environment to default the namespace from; use a fully-qualified `<namespace>/<name>` reference. |
 | `ASPIRERADIUS056` | Publish | Two emitted constructs map to the same Bicep identifier (e.g. a resource named `app` or `recipepack` colliding with a synthesized construct, or two resource names that sanitize to the same identifier such as `my-x` and `my.x`). Bicep symbols share one flat namespace; rename the conflicting resource. |
 
-> `ASPIRERADIUS021` was retired: the cloud is taken from the explicit `RadiusCloud` argument
-> rather than inferred from the recipe location, so there is no cloud/recipe conflict to flag.
-
 For native `Radius.*` types, recipe parameters are configured at the environment/type scope; per-instance recipe parameters are rejected with `ASPIRERADIUS027`, and environment/type-scoped values override the recipe's intrinsic parameters. The per-resource-over-type-over-environment precedence applies only to legacy `Applications.*` types.
 
 ### Known limitations

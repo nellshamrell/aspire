@@ -189,7 +189,7 @@ internal static partial class BicepPostProcessor
 
     /// <summary>
     /// Recursively converts a string-keyed object to a Bicep object literal,
-    /// preserving the Bicep type of each value (FR-003).
+    /// preserving the Bicep type of each value.
     /// </summary>
     internal static BicepDictionary<object> ToBicepObject(IDictionary<string, object> dictionary)
     {
@@ -205,7 +205,7 @@ internal static partial class BicepPostProcessor
 
     /// <summary>
     /// Recursively converts an enumerable to a Bicep array literal, preserving the
-    /// Bicep type of each element (FR-003). Strings are handled as scalars before
+    /// Bicep type of each element. Strings are handled as scalars before
     /// reaching this method.
     /// </summary>
     private static BicepList<object> ToBicepArray(System.Collections.IEnumerable sequence)

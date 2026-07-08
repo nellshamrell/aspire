@@ -39,7 +39,7 @@ public sealed class LegacyRecipeEntryConstruct : ProvisionableConstruct
 
     /// <summary>
     /// Optional recipe parameters for this legacy entry. Populated only when the
-    /// environment declares recipe parameters (FR-005); left unassigned otherwise
+    /// environment declares recipe parameters; left unassigned otherwise
     /// so the <c>parameters</c> key is omitted from the emitted Bicep.
     /// </summary>
     public BicepDictionary<object> Parameters

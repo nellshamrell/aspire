@@ -25,7 +25,7 @@ internal sealed class RadiusDeploymentPipelineStep
     // Builds the user-facing exception thrown when the `rad` CLI is not found on PATH.
     // Centralized so both this deploy step and RadCredentialRegisterStep emit an identical
     // message that always includes the install link and PATH remediation — a dropped link is
-    // then caught by RadCliDetectionTests.ErrorMessage_ContainsInstallLink exercising this method.
+    // then caught by RadCliDetectionTests.RadCliNotFoundException_ContainsInstallLinkAndRemediation exercising this method.
     internal static InvalidOperationException CreateRadCliNotFoundException() =>
         new($"The 'rad' CLI was not found. Please install it from {RadInstallUrl} and ensure it is available on your PATH.");
 
@@ -38,6 +38,12 @@ internal sealed class RadiusDeploymentPipelineStep
 
     internal static async Task<bool> DetectRadCliAsync(CancellationToken cancellationToken = default)
     {
+        // Honour cancellation up front so a pre-cancelled token surfaces as
+        // OperationCanceledException regardless of whether `rad` is present. Otherwise, when
+        // `rad` is not on PATH, process.Start() throws Win32Exception first — which the catch
+        // filter below swallows into a `false` — and cancellation is never observed.
+        cancellationToken.ThrowIfCancellationRequested();
+
         try
         {
             using var process = new Process();

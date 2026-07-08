@@ -8,7 +8,7 @@ namespace Aspire.Hosting.Radius.CloudProviders;
 /// <summary>
 /// Builder surface exposed inside the <c>WithAwsProvider</c> callback for
 /// selecting an AWS credential mode. Exactly one <c>With*</c> method must
-/// be called; a repeat call replaces the previous selection (FR-008).
+/// be called; a repeat call replaces the previous selection.
 /// </summary>
 public interface IAwsRadiusProviderBuilder
 {
@@ -16,7 +16,7 @@ public interface IAwsRadiusProviderBuilder
     /// Configures an IAM access key credential. Both the access key id and
     /// secret access key values are provided via
     /// <see cref="ParameterResource"/>s so plaintext never appears in the
-    /// publish artifact (FR-006). Reference them with
+    /// publish artifact. Reference them with
     /// <c>builder.AddParameter("awsAccessKeyId", secret: true)</c> /
     /// <c>builder.AddParameter("awsSecretAccessKey", secret: true)</c>.
     /// </summary>

@@ -24,6 +24,12 @@ public static class RadiusPublishExtensions
     /// <param name="builder">The resource builder.</param>
     /// <param name="configure">A callback to configure the <see cref="RadiusResourceCustomization"/>.</param>
     /// <returns>The resource builder for chaining.</returns>
+    /// <remarks>
+    /// Each call adds a fresh <see cref="RadiusResourceCustomization"/> annotation and the
+    /// publisher consumes only the last one (last-call-wins). Customizations from earlier calls
+    /// are <em>not</em> merged, so a single call should set every field you need rather than
+    /// spreading configuration across multiple calls.
+    /// </remarks>
     // RunSyncOnBackgroundThread = true: the configure callback mutates the customization
     // synchronously here. Polyglot AppHost runtimes (TypeScript, Python, ...) marshal sync
     // delegates over RPC and would deadlock if invoked on the dispatcher thread. The opt-in
@@ -70,6 +76,11 @@ public static class RadiusPublishExtensions
     /// <para><b>Callback-added constructs.</b> Constructs a callback adds itself are not
     /// tracked and will not be rewired when a builder-created parent is renamed — set
     /// such references explicitly in the callback that creates the new construct.</para>
+    /// <para><b>Idempotency.</b> The callback may be invoked multiple times during a single
+    /// publish/deploy flow (the infrastructure is rebuilt by the validation, publish, deploy,
+    /// and sealed-secret pipeline steps), not merely once per publish and once per deploy.
+    /// The callback must therefore be pure/idempotent and must not perform external
+    /// side effects that would be incorrect if repeated.</para>
     /// </remarks>
     // [AspireExportIgnore]: the callback parameter carries the Azure.Provisioning AST
     // (RadiusInfrastructureOptions + the typed *Construct classes) which is not ATS-

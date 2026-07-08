@@ -93,10 +93,8 @@ internal sealed class RadCredentialRegisterStep
         var radAvailable = await RadiusDeploymentPipelineStep.DetectRadCliAsync(cancellationToken).ConfigureAwait(false);
         if (!radAvailable)
         {
-            const string installUrl = "https://docs.radapp.io/installation/";
-            logger.LogError("The 'rad' CLI was not found on PATH. Install it from {InstallUrl}", installUrl);
-            throw new InvalidOperationException(
-                $"The 'rad' CLI was not found. Install it from {installUrl} and ensure it is on PATH.");
+            logger.LogError("The 'rad' CLI was not found on PATH. Install it from {InstallUrl}", RadiusDeploymentPipelineStep.RadInstallUrl);
+            throw RadiusDeploymentPipelineStep.CreateRadCliNotFoundException();
         }
 
         foreach (var entry in entries)

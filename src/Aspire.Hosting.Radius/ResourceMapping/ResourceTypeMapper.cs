@@ -37,9 +37,20 @@ internal sealed class ResourceTypeMapper
         string? LegacyApiVersion = null);
 
     /// <summary>
-    /// Maps Aspire resource CLR type names to Radius type information.
-    /// Uses full type name to avoid direct assembly references to optional hosting packages (e.g., Dapr).
+    /// Maps Aspire resource CLR type information keyed by the resource's <em>simple</em> type
+    /// name (e.g. <c>"RedisResource"</c>), not its fully-qualified name. This is an intentional
+    /// compatibility tradeoff: the mapped resource types live in optional hosting packages that
+    /// this project deliberately does not reference, and keying by simple name tolerates a type
+    /// moving assemblies or namespaces across Aspire versions. Fully-qualified names would also
+    /// work as plain string keys, but would break silently on such a move.
     /// </summary>
+    /// <remarks>
+    /// Caveat: because lookup (see <see cref="GetMappingKey"/>) walks the inheritance chain
+    /// comparing <c>Type.Name</c>, a third-party resource type that happens to share
+    /// a simple name with an entry here (e.g. an unrelated <c>RedisResource</c> in another
+    /// namespace/assembly) would be mapped to the corresponding Radius type. This is an accepted
+    /// low-risk tradeoff for the no-assembly-reference design.
+    /// </remarks>
     private static readonly Dictionary<string, RadiusTypeMapping> s_typeMappings = new(StringComparer.Ordinal)
     {
         // Resource types from optional hosting packages - referenced by string name

@@ -43,23 +43,18 @@ public class RadCliDetectionTests
     }
 
     [Fact]
-    public void ErrorMessage_ContainsInstallLink()
+    public void RadCliNotFoundException_ContainsInstallLinkAndRemediation()
     {
-        // Verify the install URL surfaces in the exception message thrown when the rad CLI
-        // is missing. We don't exercise ExecuteAsync directly here (it requires a full
-        // PipelineStepContext); the test asserts on the expected message shape so a refactor
-        // that drops the install link is caught.
-        var expectedUrl = "https://docs.radapp.io/installation/";
+        // Exercises the real production factory both throw sites use (deploy step and
+        // credential-register step). Asserting on the actual message means a refactor that
+        // drops the install link or PATH remediation fails this test — unlike asserting on a
+        // hand-written literal, which cannot observe production changes.
+        var ex = RadiusDeploymentPipelineStep.CreateRadCliNotFoundException();
 
-        var ex = Assert.Throws<InvalidOperationException>(new Action(() =>
-        {
-            throw new InvalidOperationException(
-                $"The 'rad' CLI was not found. Please install it from {expectedUrl} and ensure it is available on your PATH.");
-        }));
-
-        Assert.Contains(expectedUrl, ex.Message);
-        Assert.Contains("rad", ex.Message);
+        Assert.Contains(RadiusDeploymentPipelineStep.RadInstallUrl, ex.Message, StringComparison.Ordinal);
+        Assert.Contains("rad", ex.Message, StringComparison.Ordinal);
         Assert.Contains("install", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("PATH", ex.Message, StringComparison.Ordinal);
     }
 
     [Fact]

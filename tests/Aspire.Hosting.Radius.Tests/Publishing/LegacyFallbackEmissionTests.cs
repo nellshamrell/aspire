@@ -17,6 +17,13 @@ namespace Aspire.Hosting.Radius.Tests.Publishing;
 /// be parented to <c>Applications.Core/environments</c> + <c>Applications.Core/applications</c>
 /// rather than the <c>Radius.Core/*</c> UDT parents. The UDT pair and the legacy
 /// pair share the same resource <c>name:</c> values; only the Bicep identifiers differ.
+///
+/// These scenarios snapshot the full generated Bicep (via Verify) rather than sampling
+/// individual tokens: the previous per-token <c>Assert.Contains</c>/<c>Assert.DoesNotContain</c>
+/// checks proved presence/absence of a handful of strings but could pass while the surrounding
+/// document was malformed. The verified snapshot pins the entire structure - parent pairs,
+/// identifiers (<c>myenv</c> vs <c>myenv_legacy</c>, <c>app</c> vs <c>app_legacy</c>), recipe
+/// schema keys, per-resource parent references, and recipe-pack registration - in one place.
 /// </summary>
 public class LegacyFallbackEmissionTests
 {
@@ -34,187 +41,79 @@ public class LegacyFallbackEmissionTests
         return context.GenerateBicep(model);
     }
 
+    /// <summary>
+    /// Legacy-only publish (Redis falls back to <c>Applications.Datastores/redisCaches</c>).
+    /// Guards: legacy parents emitted with inline legacy-schema recipes (<c>templateKind</c>/
+    /// <c>templatePath</c>) and default recipe template; UDT parents and recipe pack absent; the
+    /// legacy env/app take the unsuffixed <c>myenv</c>/<c>app</c> identifiers; legacy env carries
+    /// <c>compute.kind: 'kubernetes'</c>.
+    /// </summary>
     [Fact]
-    public void RedisOnly_EmitsLegacyParentsAndNoUdtResources()
+    public Task RedisOnly_EmitsLegacyParentsAndNoUdtResources()
     {
         var bicep = GenerateBicep(b => b.AddRedis("cache"));
-
-        // Legacy parents emitted
-        Assert.Contains("Applications.Core/environments@", bicep);
-        Assert.Contains("Applications.Core/applications@", bicep);
-
-        // Legacy env carries inline recipes with legacy schema keys
-        Assert.Contains("templateKind:", bicep);
-        Assert.Contains("templatePath:", bicep);
-
-        // Pure-legacy publish: UDT parents + recipe pack must NOT appear.
-        Assert.DoesNotContain("Radius.Core/environments@", bicep);
-        Assert.DoesNotContain("Radius.Core/applications@", bicep);
-        Assert.DoesNotContain("Radius.Core/recipePacks@", bicep);
-        Assert.DoesNotContain("resource recipepack ", bicep);
-
-        // With no UDT chain, legacy env/app take the unsuffixed identifiers.
-        Assert.Contains("myenv.id", bicep);
-        Assert.Contains("app.id", bicep);
-        Assert.DoesNotContain("myenv_legacy", bicep);
-        Assert.DoesNotContain("app_legacy", bicep);
+        return Verify(bicep, extension: "bicep");
     }
 
+    /// <summary>
+    /// Mixed legacy + UDT + container. Guards: both UDT (<c>Radius.Core/*</c>) and legacy
+    /// (<c>Applications.Core/*</c>) parent pairs present; UDT recipe pack uses the new schema
+    /// (<c>recipeKind</c>/<c>recipeLocation</c>) while the legacy env uses the legacy schema
+    /// (<c>templateKind</c>/<c>templatePath</c>).
+    /// </summary>
     [Fact]
-    public void LegacyEnvironment_SharesResourceNameWithUdt()
+    public Task MixedLegacyAndUdt_EmitsBothParentPairs()
+    {
+        var bicep = GenerateBicep(b =>
+        {
+            b.AddRedis("cache");     // legacy fallback -> Applications.Datastores/redisCaches
+            b.AddPostgres("db");     // UDT -> Radius.Data/postgreSQL (or similar)
+            b.AddContainer("api", "myapp/api", "latest");
+        });
+        return Verify(bicep, extension: "bicep");
+    }
+
+    /// <summary>
+    /// Legacy + UDT with no container. Guards: the UDT env (<c>resource myenv</c>) and the legacy
+    /// env (<c>resource myenv_legacy</c>) coexist and both emit <c>name: 'myenv'</c>; the legacy
+    /// resource (<c>cache</c>) references the legacy parents (<c>myenv_legacy.id</c>/
+    /// <c>app_legacy.id</c>) while the UDT resource (<c>db</c>) references the UDT parents and never
+    /// the legacy ones.
+    /// </summary>
+    [Fact]
+    public Task LegacyAndUdt_ShareResourceNameAndUseDistinctParents()
     {
         var bicep = GenerateBicep(b =>
         {
             b.AddRedis("cache");
             b.AddPostgres("db");
         });
-
-        // Both envs emit `name: 'myenv'` (the UDT one and the legacy one).
-        var udtEnvIdx = bicep.AsSpan().IndexOf("resource myenv ".AsSpan());
-        var legacyEnvIdx = bicep.AsSpan().IndexOf("resource myenv_legacy ".AsSpan());
-
-        Assert.True(udtEnvIdx >= 0, "Expected UDT env identifier `myenv`");
-        Assert.True(legacyEnvIdx >= 0, "Expected legacy env identifier `myenv_legacy`");
-
-        // Both declarations should contain `name: 'myenv'`
-        var nameOccurrences = System.Text.RegularExpressions.Regex.Matches(
-            bicep, @"name:\s*'myenv'").Count;
-        Assert.True(nameOccurrences >= 2,
-            $"Expected at least 2 occurrences of `name: 'myenv'`, saw {nameOccurrences}");
+        return Verify(bicep, extension: "bicep");
     }
 
+    /// <summary>
+    /// UDT-only publish (Postgres + container, no legacy fallback). Guards: legacy parents and
+    /// <c>_legacy</c> identifiers are absent; the UDT parent pair is still emitted.
+    /// </summary>
     [Fact]
-    public void MixedLegacyAndUdt_EmitsBothParentPairs()
-    {
-        var bicep = GenerateBicep(b =>
-        {
-            b.AddRedis("cache");     // legacy fallback → Applications.Datastores/redisCaches
-            b.AddPostgres("db");     // UDT → Radius.Data/postgreSQL (or similar)
-            b.AddContainer("api", "myapp/api", "latest");
-        });
-
-        // Both UDT and legacy parent pairs present.
-        Assert.Contains("Radius.Core/environments@", bicep);
-        Assert.Contains("Radius.Core/applications@", bicep);
-        Assert.Contains("Applications.Core/environments@", bicep);
-        Assert.Contains("Applications.Core/applications@", bicep);
-
-        // UDT recipe pack uses new schema; legacy env uses legacy schema.
-        Assert.Contains("recipeKind:", bicep);
-        Assert.Contains("recipeLocation:", bicep);
-        Assert.Contains("templateKind:", bicep);
-        Assert.Contains("templatePath:", bicep);
-    }
-
-    [Fact]
-    public void UdtOnly_DoesNotEmitLegacyParents()
+    public Task UdtOnly_DoesNotEmitLegacyParents()
     {
         var bicep = GenerateBicep(b =>
         {
             b.AddPostgres("db");
             b.AddContainer("api", "myapp/api", "latest");
         });
-
-        // Legacy parents must NOT appear when no legacy resource is present.
-        Assert.DoesNotContain("Applications.Core/environments@", bicep);
-        Assert.DoesNotContain("Applications.Core/applications@", bicep);
-        Assert.DoesNotContain("myenv_legacy", bicep);
-        Assert.DoesNotContain("app_legacy", bicep);
-
-        // UDT pair still emitted.
-        Assert.Contains("Radius.Core/environments@", bicep);
-        Assert.Contains("Radius.Core/applications@", bicep);
+        return Verify(bicep, extension: "bicep");
     }
 
+    /// <summary>
+    /// Two legacy resources of the same type with different custom recipe names must both
+    /// register in the legacy env's <c>recipes[type][recipeName]</c> map - neither should
+    /// overwrite the other. Guards both named recipes and their locations in the snapshot.
+    /// </summary>
     [Fact]
-    public void LegacyResource_DoesNotReferenceUdtParents()
+    public Task LegacyRecipes_MultipleNamedRecipesPerType_AllEmitted()
     {
-        var bicep = GenerateBicep(b =>
-        {
-            b.AddRedis("cache");
-            b.AddPostgres("db");
-        });
-
-        var cacheBlock = ExtractResourceBlock(bicep, "cache");
-
-        // The cache block must reference legacy parents, not UDT parents.
-        Assert.Contains("myenv_legacy.id", cacheBlock);
-        Assert.Contains("app_legacy.id", cacheBlock);
-
-        // Use leading-space prefix so we don't match `myenv_legacy.id`.
-        Assert.DoesNotContain(" myenv.id", cacheBlock);
-        Assert.DoesNotContain(": myenv.id", cacheBlock);
-    }
-
-    [Fact]
-    public void UdtResource_DoesNotReferenceLegacyParents()
-    {
-        var bicep = GenerateBicep(b =>
-        {
-            b.AddRedis("cache");
-            b.AddPostgres("db");
-        });
-
-        var dbBlock = ExtractResourceBlock(bicep, "db");
-
-        Assert.DoesNotContain("myenv_legacy.id", dbBlock);
-        Assert.DoesNotContain("app_legacy.id", dbBlock);
-    }
-
-    private static string ExtractResourceBlock(string bicep, string identifier)
-    {
-        var prefix = $"resource {identifier} ";
-        var start = bicep.IndexOf(prefix, StringComparison.Ordinal);
-        Assert.True(start >= 0, $"Expected `{prefix}` in generated Bicep");
-
-        // Find the matching closing brace of this resource declaration.
-        var braceStart = bicep.IndexOf('{', start);
-        Assert.True(braceStart >= 0);
-
-        var depth = 0;
-        for (var i = braceStart; i < bicep.Length; i++)
-        {
-            if (bicep[i] == '{')
-            {
-                depth++;
-            }
-            else if (bicep[i] == '}')
-            {
-                depth--;
-                if (depth == 0)
-                {
-                    return bicep.Substring(start, i - start + 1);
-                }
-            }
-        }
-
-        return bicep.Substring(start);
-    }
-
-    [Fact]
-    public void LegacyEnvironment_EmitsComputeKindKubernetes()
-    {
-        var bicep = GenerateBicep(b => b.AddRedis("cache"));
-
-        // Legacy environment needs properties.compute.kind/namespace.
-        Assert.Contains("compute:", bicep);
-        Assert.Contains("kind: 'kubernetes'", bicep);
-    }
-
-    [Fact]
-    public void LegacyRedis_HasDefaultRecipeTemplate()
-    {
-        var bicep = GenerateBicep(b => b.AddRedis("cache"));
-
-        Assert.Contains("ghcr.io/radius-project/recipes/local-dev/rediscaches", bicep);
-    }
-
-    [Fact]
-    public void LegacyRecipes_MultipleNamedRecipesPerType_AllEmitted()
-    {
-        // Two legacy resources of the same type but different custom recipe
-        // names must both register in the legacy env's
-        // `recipes[type][recipeName]` map — neither should overwrite the other.
         using var builder = TestDistributedApplicationBuilder.Create(DistributedApplicationOperation.Publish);
         builder.AddRadiusEnvironment("myenv");
 
@@ -245,10 +144,6 @@ public class LegacyFallbackEmissionTests
         var context = new RadiusBicepPublishingContext(radiusEnv);
         var bicep = context.GenerateBicep(model);
 
-        // Both named recipes must appear in the legacy env's recipes block.
-        Assert.Contains("ghcr.io/myorg/recipes/redis-a:latest", bicep);
-        Assert.Contains("ghcr.io/myorg/recipes/redis-b:latest", bicep);
-        Assert.Contains("recipeA:", bicep);
-        Assert.Contains("recipeB:", bicep);
+        return Verify(bicep, extension: "bicep");
     }
 }

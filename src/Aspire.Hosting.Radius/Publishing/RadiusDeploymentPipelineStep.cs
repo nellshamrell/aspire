@@ -26,7 +26,14 @@ namespace Aspire.Hosting.Radius.Publishing;
 /// </summary>
 internal sealed class RadiusDeploymentPipelineStep
 {
-    private const string RadInstallUrl = "https://docs.radapp.io/installation/";
+    internal const string RadInstallUrl = "https://docs.radapp.io/installation/";
+
+    // Builds the user-facing exception thrown when the `rad` CLI is not found on PATH.
+    // Centralized so both this deploy step and RadCredentialRegisterStep emit an identical
+    // message that always includes the install link and PATH remediation — a dropped link is
+    // then caught by RadCliDetectionTests.ErrorMessage_ContainsInstallLink exercising this method.
+    internal static InvalidOperationException CreateRadCliNotFoundException() =>
+        new($"The 'rad' CLI was not found. Please install it from {RadInstallUrl} and ensure it is available on your PATH.");
 
     // The single logical Aspire application name, identical across every group's artifact
     // (the builder always names the application 'app'); forwarded as --application (FR-011).
@@ -117,8 +124,7 @@ internal sealed class RadiusDeploymentPipelineStep
         if (!radAvailable)
         {
             logger.LogError("The 'rad' CLI was not found on PATH. Install it from {InstallUrl}", RadInstallUrl);
-            throw new InvalidOperationException(
-                $"The 'rad' CLI was not found. Please install it from {RadInstallUrl} and ensure it is available on your PATH.");
+            throw CreateRadCliNotFoundException();
         }
 
         logger.LogInformation("rad CLI detected on PATH for environment '{EnvironmentName}'", _environment.Name);

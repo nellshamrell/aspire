@@ -5,6 +5,7 @@ using Aspire.Hosting.ApplicationModel;
 using Aspire.Hosting.Radius;
 using Aspire.Hosting.Radius.Annotations;
 using Aspire.Hosting.Radius.CloudProviders;
+using System.Diagnostics.CodeAnalysis;
 
 namespace Aspire.Hosting;
 
@@ -36,6 +37,7 @@ public static class RadiusCloudProviderExtensions
     // know how to render. The interface is part of the public C# API surface;
     // the export is suppressed only for the ATS catalog.
     [AspireExportIgnore]
+    [Experimental("ASPIRERADIUS003", UrlFormat = "https://aka.ms/aspire/diagnostics/{0}")]
     public static IResourceBuilder<RadiusEnvironmentResource> WithAzureProvider(
         this IResourceBuilder<RadiusEnvironmentResource> builder,
         string subscriptionId,
@@ -76,6 +78,7 @@ public static class RadiusCloudProviderExtensions
     /// <exception cref="ArgumentException">Validation failed on inputs (FR-007).</exception>
     /// <exception cref="InvalidOperationException">The callback did not select a credential (ASPIRERADIUS010).</exception>
     [AspireExportIgnore]
+    [Experimental("ASPIRERADIUS003", UrlFormat = "https://aka.ms/aspire/diagnostics/{0}")]
     public static IResourceBuilder<RadiusEnvironmentResource> WithAwsProvider(
         this IResourceBuilder<RadiusEnvironmentResource> builder,
         string accountId,

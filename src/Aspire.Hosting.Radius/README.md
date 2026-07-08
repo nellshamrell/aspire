@@ -250,7 +250,7 @@ disjoint numeric ranges reserved so the IDs never collide:
 
 | Range | Mechanism | Surfaced as |
 |-------|-----------|-------------|
-| `ASPIRERADIUS001`–`ASPIRERADIUS009` | Compile-time analyzer diagnostics for experimental APIs (incl. `ASPIRERADIUS005` for `WithRadiusResourceGroup` and `ASPIRERADIUS006` for the secret-store APIs) | `[Experimental]` warnings (suppressible), documented at `https://aka.ms/aspire/diagnostics/<id>` |
+| `ASPIRERADIUS001`–`ASPIRERADIUS009`, `ASPIRERADIUS057` | Compile-time analyzer diagnostics for experimental APIs (incl. `ASPIRERADIUS003` for the cloud-provider / cloud-managed surface `WithAzureProvider`/`WithAwsProvider`/`WithManagedResource`, `ASPIRERADIUS005` for `WithRadiusResourceGroup`, `ASPIRERADIUS006` for the secret-store APIs, and `ASPIRERADIUS057` for `WithContainerImage`) | `[Experimental]` warnings (suppressible), documented at `https://aka.ms/aspire/diagnostics/<id>` |
 | `ASPIRERADIUS010`–`ASPIRERADIUS019` | Cloud-provider configuration errors | Thrown `InvalidOperationException` (message includes the ID) |
 | `ASPIRERADIUS020`–`ASPIRERADIUS029` | Cloud-managed resource (`WithManagedResource`) and recipe/recipe-parameter validation | Thrown `ArgumentException` (config time) / `InvalidOperationException` (publish time) |
 | `ASPIRERADIUS030`–`ASPIRERADIUS039` | Multi-resource-group routing (`WithRadiusResourceGroup`) validation | Thrown `ArgumentException` (call site, e.g. empty name) / `InvalidOperationException` (fail-fast gate before publish/deploy) |

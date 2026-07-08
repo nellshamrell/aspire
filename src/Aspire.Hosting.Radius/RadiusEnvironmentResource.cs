@@ -128,11 +128,22 @@ public sealed class RadiusEnvironmentResource : Resource, IComputeEnvironmentRes
     public ReferenceExpression GetHostAddressExpression(EndpointReference endpointReference)
     {
         var resource = endpointReference.Resource;
-        // Kubernetes service DNS for a resource deployed to this environment's namespace is
+        // Kubernetes service DNS for a resource deployed to a namespace is
         // `<service>.<namespace>.svc.cluster.local`. The namespace segment is required: without
         // it the name only resolves for callers already inside the same namespace, so cross-
-        // namespace (and fully-qualified) service discovery breaks. Use the environment's
-        // configured Namespace so this tracks WithNamespace(...)/the `default` fallback.
-        return ReferenceExpression.Create($"{resource.Name}.{Namespace}.svc.cluster.local");
+        // namespace (and fully-qualified) service discovery breaks.
+        //
+        // Resolve the namespace of the environment the *target* resource deploys into, not this
+        // environment's. With multiple Radius environments in one model (each with its own
+        // WithNamespace), a WithReference from a resource in environment A to a resource in
+        // environment B must emit B's namespace, otherwise B's service name would be qualified
+        // with A's namespace and never resolve. `WithComputeEnvironment` is mandatory in
+        // multi-environment models (enforced by the ValidateComputeEnvironments pipeline step),
+        // so the target carries a ComputeEnvironmentAnnotation for this reachable cross-env case.
+        // Fall back to this environment's namespace when the target resolves to no Radius
+        // environment: the single-environment and AKS-wrap cases share this environment's
+        // namespace, so the fallback is correct there.
+        var targetNamespace = (resource.GetComputeEnvironment() as RadiusEnvironmentResource)?.Namespace ?? Namespace;
+        return ReferenceExpression.Create($"{resource.Name}.{targetNamespace}.svc.cluster.local");
     }
 }

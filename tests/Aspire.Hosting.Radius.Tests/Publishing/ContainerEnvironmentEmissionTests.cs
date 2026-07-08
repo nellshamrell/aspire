@@ -106,6 +106,34 @@ public class ContainerEnvironmentEmissionTests
     }
 
     [Fact]
+    public void ComputeToCompute_CrossEnvironmentReference_UsesTargetEnvironmentNamespace()
+    {
+        using var builder = TestDistributedApplicationBuilder.Create(DistributedApplicationOperation.Publish);
+        var frontendEnv = builder.AddRadiusEnvironment("frontend-env").WithNamespace("frontend-ns");
+        var dataEnv = builder.AddRadiusEnvironment("data-env").WithNamespace("data-ns");
+
+        // backend deploys to data-env (data-ns); api deploys to frontend-env (frontend-ns) and
+        // references backend across environments. The emitted service-discovery FQDN for backend
+        // must use the TARGET environment's namespace (data-ns), not the referencing environment's.
+        var backend = builder.AddContainer("backend", "myapp/backend", "latest")
+            .WithHttpEndpoint(targetPort: 8080, name: "http")
+            .WithComputeEnvironment(dataEnv);
+        builder.AddContainer("api", "myapp/api", "latest")
+            .WithReference(backend.GetEndpoint("http"))
+            .WithComputeEnvironment(frontendEnv);
+
+        using var app = builder.Build();
+        var model = app.Services.GetRequiredService<DistributedApplicationModel>();
+        var frontend = model.Resources.OfType<RadiusEnvironmentResource>().First(e => e.Name == "frontend-env");
+
+        var bicep = Generate(model, frontend);
+
+        // The api container lives in frontend-ns but must reach backend in data-ns.
+        Assert.Contains("value: 'http://backend.data-ns.svc.cluster.local'", bicep);
+        Assert.DoesNotContain("backend.frontend-ns.svc.cluster.local", bicep, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void EndpointAnnotations_EmittedAsContainerPorts()
     {
         using var builder = TestDistributedApplicationBuilder.Create(DistributedApplicationOperation.Publish);

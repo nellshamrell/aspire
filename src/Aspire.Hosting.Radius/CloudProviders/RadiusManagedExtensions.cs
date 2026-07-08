@@ -5,6 +5,7 @@ using Aspire.Hosting.ApplicationModel;
 using Aspire.Hosting.Radius;
 using Aspire.Hosting.Radius.Annotations;
 using Aspire.Hosting.Radius.CloudProviders;
+using System.Diagnostics.CodeAnalysis;
 
 namespace Aspire.Hosting;
 
@@ -54,6 +55,7 @@ public static class RadiusManagedExtensions
     // (ASPIREEXPORT008) doesn't know how to render it. The export is suppressed only
     // for the ATS catalog; the method remains fully usable from C#.
     [AspireExportIgnore]
+    [Experimental("ASPIRERADIUS003", UrlFormat = "https://aka.ms/aspire/diagnostics/{0}")]
     public static IResourceBuilder<RadiusEnvironmentResource> WithManagedResource(
         this IResourceBuilder<RadiusEnvironmentResource> builder,
         IResourceBuilder<IResource> resource,
@@ -108,6 +110,7 @@ public static class RadiusManagedExtensions
     // [AspireExportIgnore]: see the primary overload — the `IResourceBuilder<IResource>`
     // target parameter is not ATS-renderable (ASPIREEXPORT008).
     [AspireExportIgnore]
+    [Experimental("ASPIRERADIUS003", UrlFormat = "https://aka.ms/aspire/diagnostics/{0}")]
     public static IResourceBuilder<RadiusEnvironmentResource> WithManagedResource(
         this IResourceBuilder<RadiusEnvironmentResource> builder,
         IResourceBuilder<IResource> resource,

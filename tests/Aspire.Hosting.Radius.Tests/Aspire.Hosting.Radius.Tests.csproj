@@ -6,11 +6,21 @@
       ASPIRERADIUS002 (RadiusRecipe.Name) is intentionally surfaced as Experimental for end users
       to telegraph that named recipe selection is going away under Radius's UDT model. Tests need
       to exercise that property to cover the legacy/transition code paths in the publisher.
-      ASPIRERADIUS004 marks the ConfigureRadiusInfrastructure escape hatch and the construct/options
-      AST it exposes; tests assert directly against that evolving AST.
+      ASPIRERADIUS003 marks the cloud-provider / cloud-managed-resource surface
+      (WithAzureProvider/WithAwsProvider/WithManagedResource); ASPIRERADIUS004 marks the
+      ConfigureRadiusInfrastructure escape hatch and the construct/options AST it exposes;
+      ASPIRERADIUS057 marks WithContainerImage. Tests exercise all of these evolving APIs.
     -->
-    <NoWarn>$(NoWarn);ASPIRERADIUS002;ASPIRERADIUS004</NoWarn>
+    <NoWarn>$(NoWarn);ASPIRERADIUS002;ASPIRERADIUS003;ASPIRERADIUS004;ASPIRERADIUS057</NoWarn>
   </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Verify.XunitV3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="$(TestsSharedDir)\TestModuleInitializer.cs" />
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Aspire.Hosting.Radius\Aspire.Hosting.Radius.csproj" />

@@ -41,7 +41,7 @@ internal static partial class CloudProviderValidation
         if (!IamRoleArnPattern().IsMatch(value))
         {
             throw new ArgumentException(
-                $"IAM role ARN '{value}' is not in the expected form 'arn:aws:iam::<account>:role/<name>'.",
+                $"IAM role ARN '{value}' is not in the expected form 'arn:aws:iam::<account>:role/<name>' (an optional path segment is allowed, e.g. 'arn:aws:iam::<account>:role/<path>/<name>').",
                 paramName);
         }
     }

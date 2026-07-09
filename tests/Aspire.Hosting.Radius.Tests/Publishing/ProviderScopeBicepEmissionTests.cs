@@ -57,8 +57,14 @@ public class ProviderScopeBicepEmissionTests
         var ctx = new RadiusBicepPublishingContext(envResource);
         var bicep = ctx.GenerateBicep(model, NullLogger.Instance);
 
-        Assert.DoesNotContain("providers.azure", bicep, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("/subscriptions/", bicep);
+        // Assert on tokens that actually appear when an Azure provider IS emitted. The Bicep shape
+        // is `providers: { kubernetes: {...} azure: { subscriptionId: ... resourceGroupName: ... } }`,
+        // so the `providers:` block is always present (kubernetes) and the literal "providers.azure"
+        // would never appear — asserting its absence proves nothing. These tokens appear only for an
+        // Azure provider, so their absence is meaningful.
+        Assert.DoesNotContain("azure:", bicep, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("subscriptionId:", bicep, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("resourceGroupName:", bicep, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

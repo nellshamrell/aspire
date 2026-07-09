@@ -48,9 +48,10 @@ public class DeployPipelineIntegrationTests
         Assert.Contains("publish-radius-testenv", pipelineStep.DependsOnSteps);
         Assert.Contains("deploy-prereq", pipelineStep.DependsOnSteps);
 
-        // Must NOT depend on push — to support kind clusters without a container registry
-        Assert.DoesNotContain("push", pipelineStep.DependsOnSteps);
-        Assert.DoesNotContain("push-prereq", pipelineStep.DependsOnSteps);
+        // Must NOT depend on any push step (e.g. "push", "push-prereq", "push-<resource>") — this
+        // supports kind clusters without a container registry. Use the predicate overload so a
+        // dependency like "push-api" can't slip past an exact-match check.
+        Assert.DoesNotContain(pipelineStep.DependsOnSteps, s => s.Contains("push", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]

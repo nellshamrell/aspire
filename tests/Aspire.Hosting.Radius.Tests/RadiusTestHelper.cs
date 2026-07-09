@@ -23,9 +23,10 @@ internal static class RadiusTestHelper
     /// <c>GenerateBicep</c> must mimic what the prepare step would have done in a real run.
     /// This mirrors the real step's targeting rules: resources explicitly bound to a different
     /// compute environment via <c>WithComputeEnvironment</c> are skipped, and the annotation's
-    /// <see cref="DeploymentTargetAnnotation.ComputeEnvironment"/> is set to the environment's
-    /// <see cref="RadiusEnvironmentResource.OwningComputeEnvironment"/> parent when present.
-    /// Keep this in sync with <c>PrepareDeploymentTargetsAsync</c>.
+    /// <see cref="DeploymentTargetAnnotation.ComputeEnvironment"/> is set to the resource's own
+    /// explicitly-bound compute environment when present, otherwise the environment's
+    /// <see cref="RadiusEnvironmentResource.OwningComputeEnvironment"/> parent (or the environment
+    /// itself). Keep this in sync with <c>PrepareDeploymentTargetsAsync</c>.
     /// </remarks>
     public static void AttachDeploymentTargets(
         RadiusEnvironmentResource environment,
@@ -49,9 +50,13 @@ internal static class RadiusTestHelper
                 continue;
             }
 
+            // Use the resource's own compute environment when explicitly bound so
+            // GetDeploymentTargetAnnotation can match it; same fix as the production prepare step.
+            var computeEnvForAnnotation = resourceComputeEnvironment ?? targetComputeEnvironment;
+
             var alreadyTargeted = resource.Annotations
                 .OfType<DeploymentTargetAnnotation>()
-                .Any(a => a.ComputeEnvironment == targetComputeEnvironment);
+                .Any(a => a.ComputeEnvironment == computeEnvForAnnotation);
             if (alreadyTargeted)
             {
                 continue;
@@ -59,7 +64,7 @@ internal static class RadiusTestHelper
 
             resource.Annotations.Add(new DeploymentTargetAnnotation(environment)
             {
-                ComputeEnvironment = targetComputeEnvironment
+                ComputeEnvironment = computeEnvForAnnotation
             });
         }
     }

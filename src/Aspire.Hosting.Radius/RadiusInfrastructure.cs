@@ -83,11 +83,19 @@ internal static class RadiusInfrastructure
                 continue;
             }
 
+            // Record the annotation against the resource's own compute environment when it is
+            // explicitly bound (via WithComputeEnvironment), falling back to this environment
+            // (or its owning parent) otherwise. ResourceExtensions.GetDeploymentTargetAnnotation
+            // matches the DeploymentTargetAnnotation by the resource's ComputeEnvironmentAnnotation,
+            // so using the parent here would cause an explicitly-targeted resource to look
+            // untargeted. This mirrors KubernetesEnvironmentResource's computeEnvForAnnotation.
+            var computeEnvForAnnotation = resourceComputeEnvironment ?? targetComputeEnvironment;
+
             // Skip if a target annotation for this environment already exists. Prepare steps
             // are idempotent so re-execution (e.g. during test composition) does not duplicate.
             var alreadyTargeted = resource.Annotations
                 .OfType<DeploymentTargetAnnotation>()
-                .Any(a => a.ComputeEnvironment == targetComputeEnvironment);
+                .Any(a => a.ComputeEnvironment == computeEnvForAnnotation);
             if (alreadyTargeted)
             {
                 continue;
@@ -100,7 +108,7 @@ internal static class RadiusInfrastructure
             // KubernetesEnvironmentResource.GetContainerRegistry does.
             resource.Annotations.Add(new DeploymentTargetAnnotation(environment)
             {
-                ComputeEnvironment = targetComputeEnvironment
+                ComputeEnvironment = computeEnvForAnnotation
             });
 
             logger.LogDebug(

@@ -10,7 +10,7 @@ using Azure.Provisioning.Primitives;
 namespace Aspire.Hosting.Radius.Publishing.Constructs;
 
 /// <summary>
-/// Represents a single recipe entry inside a recipe pack (templateKind + templatePath).
+/// Represents a single recipe entry inside a recipe pack (recipeKind + recipeLocation).
 /// </summary>
 [Experimental("ASPIRERADIUS004", UrlFormat = "https://aka.ms/aspire/diagnostics/{0}")]
 public sealed class RecipeEntryConstruct : ProvisionableConstruct

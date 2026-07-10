@@ -184,6 +184,10 @@ public sealed class RadiusStarterDeploymentTests(ITestOutputHelper output)
 
             await auto.InstallCurrentBuildAspireCliAsync(counter, output, "Step 12");
 
+            // Redis is intentionally enabled: it exercises the Radius container recipe and the
+            // connection-string wiring from webfrontend to a Radius-deployed cache, which is part
+            // of the realistic starter scenario. (Redis is a ContainerResource with its own image,
+            // so it is not the subject of the WithContainerImage project-image workaround.)
             output.WriteLine("Step 13: Creating Aspire starter project (with Redis cache)...");
             await auto.AspireNewAsync(projectName, counter, useRedisCache: true);
 
@@ -276,8 +280,13 @@ public sealed class RadiusStarterDeploymentTests(ITestOutputHelper output)
             await auto.EnterAsync();
             await auto.WaitForSuccessPromptAsync(counter, TimeSpan.FromMinutes(5));
 
+            // Split the marker token in the source command (BICEP_IMAGES''_OK evaluates to
+            // BICEP_IMAGES_OK) so the searched string appears only in the command's *output* when
+            // both greps match, not in the echoed command line itself. The grep -q chain's exit
+            // code is still the hard gate (a failed grep trips the ERR prompt below); this marker
+            // makes a successful match an explicit positive signal in the recording.
             await auto.TypeAsync($"grep -q '{acrLoginServer}/apiservice' ../out/app.bicep && " +
-                  $"grep -q '{acrLoginServer}/webfrontend' ../out/app.bicep && echo BICEP_IMAGES_OK");
+                  $"grep -q '{acrLoginServer}/webfrontend' ../out/app.bicep && echo BICEP_IMAGES''_OK");
             await auto.EnterAsync();
             await auto.WaitUntilAsync(
                 s => new CellPatternSearcher().Find("BICEP_IMAGES_OK").Search(s).Count > 0,
@@ -315,8 +324,12 @@ public sealed class RadiusStarterDeploymentTests(ITestOutputHelper output)
             await auto.EnterAsync();
             await auto.WaitForSuccessPromptAsync(counter, TimeSpan.FromMinutes(6));
 
+            // Show labels too: the endpoint verification below resolves Services by the Radius
+            // platform label radapp.io/resource=<name>. Printing --show-labels here makes a
+            // label-schema mismatch (e.g. a different key/casing in a future control plane)
+            // immediately visible in the recording instead of surfacing as an empty jsonpath.
             output.WriteLine("Step 25: Listing deployed pods and services...");
-            await auto.TypeAsync($"kubectl get pods,svc -n {appNamespace} -l radapp.io/application=app");
+            await auto.TypeAsync($"kubectl get pods,svc -n {appNamespace} -l radapp.io/application=app --show-labels");
             await auto.EnterAsync();
             await auto.WaitForSuccessPromptAsync(counter, TimeSpan.FromSeconds(30));
 

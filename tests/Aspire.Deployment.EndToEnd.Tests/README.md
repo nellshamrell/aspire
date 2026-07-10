@@ -181,6 +181,11 @@ Radius-specific notes:
   resources yet (<https://github.com/microsoft/aspire/issues/16844>). The test builds/pushes the
   starter images to ACR and attaches them with `WithContainerImage` (Experimental
   `ASPIRERADIUS057`) so the generated `app.bicep` references pullable images.
+- **Verifies the Radius.Core UDT app, not just Redis.** Graph validation uses
+  `rad app graph -a app --preview` (the legacy `rad app graph` routes to Applications.Core, which
+  the Redis-only legacy `app` satisfies on its own) and asserts the graph names both project
+  containers. The `webfrontend` probe requests `/weather` (not `/`) so it exercises the
+  `AddRedisOutputCache` path and the apiservice API client end-to-end.
 
 ## TypeScript deployment coverage
 

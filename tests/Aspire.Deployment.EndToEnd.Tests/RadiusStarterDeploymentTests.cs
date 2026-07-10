@@ -309,8 +309,24 @@ public sealed class RadiusStarterDeploymentTests(ITestOutputHelper output)
 
             // The Radius application name is fixed to "app" by the publisher. Show the deployed
             // graph and the container resources; both must succeed.
+            //
+            // --preview forces the Radius.Core graph implementation. Without it, the pinned 0.59
+            // `rad app graph` routes to the legacy Applications.Core graph API, which the legacy
+            // `app` that Radius creates for Redis satisfies on its own -- so the command could
+            // succeed without ever proving the Radius.Core UDT application that owns the project
+            // containers actually deployed. See `rad app graph --help`:
+            //   --preview   Use the Radius.Core preview implementation
             output.WriteLine("Step 23: Verifying Radius resources...");
-            await auto.TypeAsync("rad app graph -a app");
+            await auto.TypeAsync("rad app graph -a app --preview");
+            await auto.EnterAsync();
+            await auto.WaitForSuccessPromptAsync(counter, TimeSpan.FromMinutes(2));
+
+            // An empty Radius.Core application still exits 0, and the harness only gates on the
+            // shell exit code -- not on graph contents. Capture the preview graph once and assert
+            // it names both project containers so a missing UDT container fails fast: grep exits
+            // non-zero on a miss, and `G=$(...)` propagates a failed `rad app graph`, either of
+            // which trips the `[n ERR:]` prompt that WaitForSuccessPromptAsync fails on.
+            await auto.TypeAsync("G=$(rad app graph -a app --preview) && echo \"$G\" && echo \"$G\" | grep -q apiservice && echo \"$G\" | grep -q webfrontend");
             await auto.EnterAsync();
             await auto.WaitForSuccessPromptAsync(counter, TimeSpan.FromMinutes(2));
 
@@ -346,14 +362,22 @@ public sealed class RadiusStarterDeploymentTests(ITestOutputHelper output)
             await auto.EnterAsync();
             await auto.WaitForSuccessPromptAsync(counter, TimeSpan.FromSeconds(60));
 
-            output.WriteLine("Step 27: Verifying webfrontend endpoint via port-forward...");
+            // Probe /weather (not /). The starter template wires Redis via AddRedisOutputCache("cache"),
+            // and /weather is the only page that both calls the apiservice (@inject WeatherApiClient)
+            // and is served through the Redis-backed output cache ([OutputCache(Duration = 5)]).
+            // Requesting / would only render the static home page and could pass with a broken Redis
+            // cache connection. The page uses [StreamRendering(true)], so a bare status check can
+            // return 200 before the forecast loads; grep the streamed table (its "Temp." headers only
+            // render in the forecasts != null branch, i.e. after WeatherApiClient returns) so the probe
+            // proves the API + output-cache path end-to-end. curl reads the full streamed response.
+            output.WriteLine("Step 27: Verifying webfrontend /weather endpoint (Redis output cache) via port-forward...");
             await auto.TypeAsync($"WEBSVC=$(kubectl get svc -n {appNamespace} -l radapp.io/resource=webfrontend -o jsonpath='{{.items[0].metadata.name}}')");
             await auto.EnterAsync();
             await auto.WaitForSuccessPromptAsync(counter, TimeSpan.FromSeconds(30));
             await auto.TypeAsync($"kubectl port-forward -n {appNamespace} svc/$WEBSVC 18081:8080 &");
             await auto.EnterAsync();
             await auto.WaitForSuccessPromptAsync(counter, TimeSpan.FromSeconds(10));
-            await auto.TypeAsync("for i in $(seq 1 10); do sleep 3 && curl -sf http://localhost:18081/ -o /dev/null -w '%{http_code}' && echo ' OK' && break; done");
+            await auto.TypeAsync("for i in $(seq 1 10); do sleep 3 && curl -sf http://localhost:18081/weather | grep -q Temp && echo ' OK' && break; done");
             await auto.EnterAsync();
             await auto.WaitForSuccessPromptAsync(counter, TimeSpan.FromSeconds(60));
 

@@ -503,7 +503,39 @@ public sealed class RadiusStarterDeploymentTests(ITestOutputHelper output)
 
             process.Start();
             using var waitCts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
-            await process.WaitForExitAsync(waitCts.Token);
+            try
+            {
+                await process.WaitForExitAsync(waitCts.Token);
+            }
+            catch (OperationCanceledException) when (waitCts.IsCancellationRequested)
+            {
+                // WaitForExitAsync only stops awaiting on cancellation; it does NOT terminate the
+                // spawned `az` process. Disposing the Process object wouldn't either. Kill the whole
+                // tree -- `az` is a Python wrapper that forks child processes -- so a hung cleanup
+                // (e.g. an interactive auth-refresh prompt) can't outlive the test run. Then wait
+                // briefly for the OS to reap the tree so we don't report before it has actually exited.
+                var terminated = false;
+                try
+                {
+                    process.Kill(entireProcessTree: true);
+                    using var killCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                    await process.WaitForExitAsync(killCts.Token);
+                    terminated = true;
+                }
+                catch (Exception killEx)
+                {
+                    // The process may have exited between the timeout and the kill (race), or the
+                    // kill/second wait may itself fail; report based on whether the wait completed.
+                    output.WriteLine($"Failed to terminate timed-out cleanup process: {killEx.Message}");
+                }
+
+                var detail = terminated
+                    ? "Timed out after 2 minutes; process tree terminated"
+                    : "Timed out after 2 minutes; process tree may not be fully terminated";
+                output.WriteLine($"Resource group deletion timed out ({resourceGroupName}): {detail}");
+                DeploymentReporter.ReportCleanupStatus(resourceGroupName, success: false, detail);
+                return;
+            }
 
             if (process.ExitCode == 0)
             {

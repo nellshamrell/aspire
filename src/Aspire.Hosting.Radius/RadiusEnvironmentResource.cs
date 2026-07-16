@@ -119,9 +119,11 @@ public sealed class RadiusEnvironmentResource : Resource, IComputeEnvironmentRes
         return ReferenceExpression.Create($"{serviceName}.{targetNamespace}.svc.cluster.local");
     }
 
-    /// <inheritdoc/>
-    [Experimental("ASPIRECOMPUTE002", UrlFormat = "https://aka.ms/aspire/diagnostics/{0}")]
-    public ReferenceExpression GetEndpointPropertyExpression(EndpointReferenceExpression endpointReferenceExpression)
+    // Explicit interface implementation: this override customizes only the *port source* for Radius
+    // peers (Service/container port instead of the proxy/host port) and is reached solely through
+    // IComputeEnvironmentResource. Keeping it off the public RadiusEnvironmentResource surface
+    // matches the other publishers (Kubernetes/Docker), which don't expose this member at all.
+    ReferenceExpression IComputeEnvironmentResource.GetEndpointPropertyExpression(EndpointReferenceExpression endpointReferenceExpression)
     {
         ArgumentNullException.ThrowIfNull(endpointReferenceExpression);
 

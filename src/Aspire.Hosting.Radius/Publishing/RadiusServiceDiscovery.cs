@@ -45,9 +45,21 @@ internal static class RadiusServiceDiscovery
 
     /// <summary>
     /// Gets the Kubernetes <c>Service</c> name the Radius recipe creates for a container whose
-    /// Aspire resource name is <paramref name="resourceName"/>.
+    /// Aspire resource name is <paramref name="resourceName"/>. Aspire keys both the top-level
+    /// <c>name:</c> and the <c>properties.containers</c> map key by the resource name, so the
+    /// recipe's <c>${normalizedName}-${containerName}</c> resolves to <c>{name}-{name}</c>.
     /// </summary>
-    public static string GetServiceName(string resourceName) => $"{resourceName}-{resourceName}";
+    public static string GetServiceName(string resourceName) => GetServiceName(resourceName, resourceName);
+
+    /// <summary>
+    /// Gets the Kubernetes <c>Service</c> name the Radius recipe creates for a container whose
+    /// top-level <c>name:</c> is <paramref name="topLevelName"/> and whose
+    /// <c>properties.containers</c> map key is <paramref name="mapKey"/>. The recipe names the
+    /// Service <c>${normalizedName}-${containerName}</c>, i.e. <c>{topLevelName}-{mapKey}</c>. Use
+    /// this overload for callback-mutated containers whose top-level name is allowed to differ from
+    /// the map key (no service-discovery contract exists for them).
+    /// </summary>
+    public static string GetServiceName(string topLevelName, string mapKey) => $"{topLevelName}-{mapKey}";
 
     /// <summary>
     /// Resolves the port the Radius recipe's <c>Service</c> exposes for the endpoint named

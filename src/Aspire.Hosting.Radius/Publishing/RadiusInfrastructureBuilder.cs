@@ -1282,7 +1282,6 @@ internal sealed class RadiusInfrastructureBuilder
         var containersByMapKey = new Dictionary<string, RadiusContainerConstruct>(StringComparer.Ordinal);
         foreach (var container in options.Containers)
         {
-            ValidateContainerNameMatchesMapKey(container);
             containersByMapKey[container.ContainerMapKey] = container;
         }
 
@@ -1306,6 +1305,13 @@ internal sealed class RadiusInfrastructureBuilder
                     $"service discovery already emitted 'services__*' variables that address it, so dropping the " +
                     $"workload would break cross-container calls. Keep the container to keep service discovery consistent.");
             }
+
+            // Only containers that had service ports pre-callback have a Service (`{name}-{name}`)
+            // that `services__*` addresses, so the name/map-key equality is only required for them.
+            // A portless baseline container or one added entirely by the callback has no service-
+            // discovery contract — Radius permits its top-level name to differ from the map key — so
+            // gating this check on a non-empty snapshot keeps the customization escape hatch open.
+            ValidateContainerNameMatchesMapKey(container);
 
             foreach (var (portName, expected) in snapshot)
             {
@@ -1354,15 +1360,50 @@ internal sealed class RadiusInfrastructureBuilder
             }
         }
 
-        // Validate the Service-name length on the FINAL container set: a callback can add the first
-        // port to a previously portless container (or add a new container), after which the recipe
-        // creates a Service whose name must fit the Kubernetes limit. Only containers that declare
-        // ports get a Service, so only those need the check.
+        // Validate the FINAL container set. A callback can add the first port to a previously
+        // portless container, add a new container, or add a second endpoint. Once a container
+        // declares ports the recipe creates a Service, so re-check the two things the recipe cares
+        // about on the post-callback state: the Service name fits the Kubernetes limit, and the
+        // container's ports are unique by (containerPort, protocol).
         foreach (var container in options.Containers)
         {
-            if (container.Ports.Count > 0)
+            if (container.Ports.Count == 0)
             {
-                ValidateServiceNameWithinKubernetesLimit(container.ContainerMapKey);
+                continue;
+            }
+
+            ValidateServiceNameWithinKubernetesLimit(container);
+
+            // The pre-callback `seenPorts` dedup in ResolvePorts only covers the baseline ports. A
+            // callback can add a second endpoint (e.g. `http2`) that resolves to the same
+            // (containerPort, protocol) as a preserved one, which would make the recipe emit
+            // duplicate Kubernetes Service ports — exactly what the baseline dedup prevents. Re-run
+            // the dedup on the FINAL literal ports so a callback can't reintroduce the collision.
+            var seenPorts = new HashSet<(int ContainerPort, string Protocol)>();
+            foreach (var (portName, portValue) in container.Ports)
+            {
+                if (portValue.Value is not { } port)
+                {
+                    continue;
+                }
+
+                // Only literal ports can collide deterministically; non-literal (expression-backed)
+                // ports on callback-added containers are the customization's own responsibility and
+                // can't be compared here.
+                if (((IBicepValue)port.ContainerPort).LiteralValue is not int literalPort ||
+                    ((IBicepValue)port.Protocol).LiteralValue is not string literalProtocol)
+                {
+                    continue;
+                }
+
+                if (!seenPorts.Add((literalPort, literalProtocol)))
+                {
+                    throw new InvalidOperationException(
+                        $"A ConfigureRadiusInfrastructure callback left container '{container.ContainerMapKey}' with " +
+                        $"more than one port on {literalPort}/{literalProtocol} (for example port '{portName}'). The " +
+                        $"Radius container recipe creates one Kubernetes Service port per declared port, so duplicate " +
+                        $"(containerPort, protocol) pairs would emit conflicting Service ports. Remove the duplicate port.");
+                }
             }
         }
     }
@@ -1403,14 +1444,20 @@ internal sealed class RadiusInfrastructureBuilder
         }
     }
 
-    private static void ValidateServiceNameWithinKubernetesLimit(string resourceName)
+    private static void ValidateServiceNameWithinKubernetesLimit(RadiusContainerConstruct container)
     {
-        var serviceName = RadiusServiceDiscovery.GetServiceName(resourceName);
+        // The recipe names the Service `${normalizedName}-${containerName}` = `{top-level name}-
+        // {map key}`. For a baseline container the name-equality guard forces name == map key, so
+        // this is `{name}-{name}`; for a callback-added/portless container the name may legitimately
+        // differ, so compute the actual Service name from the literal top-level name when available.
+        var mapKey = container.ContainerMapKey;
+        var topLevelName = ((IBicepValue)container.ContainerName).LiteralValue is string literalName ? literalName : mapKey;
+        var serviceName = RadiusServiceDiscovery.GetServiceName(topLevelName, mapKey);
         if (serviceName.Length > MaxKubernetesServiceNameLength)
         {
             throw new InvalidOperationException(
                 $"The Radius container recipe creates a Kubernetes Service named '{serviceName}' for resource " +
-                $"'{resourceName}', but that is {serviceName.Length} characters — longer than the " +
+                $"'{mapKey}', but that is {serviceName.Length} characters — longer than the " +
                 $"{MaxKubernetesServiceNameLength}-character limit for a Kubernetes Service name (an RFC 1123 DNS " +
                 $"label). Shorten the resource name to at most {(MaxKubernetesServiceNameLength - 1) / 2} characters " +
                 $"so the doubled '{{name}}-{{name}}' Service name stays within the limit.");

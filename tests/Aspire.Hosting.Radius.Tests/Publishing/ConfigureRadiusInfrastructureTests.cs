@@ -313,7 +313,8 @@ public class ConfigureRadiusInfrastructureTests
             {
                 opts.Containers[0].ContainerName = "renamed";
             });
-        builder.AddContainer("api", "myapp/api", "latest");
+        builder.AddContainer("api", "myapp/api", "latest")
+            .WithHttpEndpoint(targetPort: 5000, name: "http");
 
         using var app = builder.Build();
         var model = app.Services.GetRequiredService<DistributedApplicationModel>();
@@ -324,6 +325,30 @@ public class ConfigureRadiusInfrastructureTests
         var ex = Assert.Throws<InvalidOperationException>(() => context.GenerateBicep(model));
         Assert.Contains("api", ex.Message);
         Assert.Contains("renamed", ex.Message);
+    }
+
+    [Fact]
+    public void ConfigureCallback_RenamingPortlessContainerName_DoesNotThrow()
+    {
+        // A portless container has no Service and no `services__*` value addresses it, so Radius
+        // permits its top-level `name:` to differ from the map key. Renaming it must be allowed —
+        // the name-equality guard only applies to containers with a service-discovery contract.
+        using var builder = TestDistributedApplicationBuilder.Create(DistributedApplicationOperation.Publish);
+        builder.AddRadiusEnvironment("myenv")
+            .ConfigureRadiusInfrastructure(opts =>
+            {
+                opts.Containers[0].ContainerName = "renamed";
+            });
+        builder.AddContainer("api", "myapp/api", "latest");
+
+        using var app = builder.Build();
+        var model = app.Services.GetRequiredService<DistributedApplicationModel>();
+        var radiusEnv = model.Resources.OfType<RadiusEnvironmentResource>().First();
+        RadiusTestHelper.AttachDeploymentTargets(radiusEnv, model);
+        var context = new RadiusBicepPublishingContext(radiusEnv);
+
+        var bicep = context.GenerateBicep(model);
+        Assert.Contains("renamed", bicep);
     }
 
     [Fact]
@@ -339,7 +364,8 @@ public class ConfigureRadiusInfrastructureTests
             {
                 opts.Containers[0].ContainerName = new IdentifierExpression("computedName");
             });
-        builder.AddContainer("api", "myapp/api", "latest");
+        builder.AddContainer("api", "myapp/api", "latest")
+            .WithHttpEndpoint(targetPort: 5000, name: "http");
 
         using var app = builder.Build();
         var model = app.Services.GetRequiredService<DistributedApplicationModel>();
@@ -572,5 +598,36 @@ public class ConfigureRadiusInfrastructureTests
         var ex = Assert.Throws<InvalidOperationException>(() => context.GenerateBicep(model));
         Assert.Contains($"{longName}-{longName}", ex.Message);
         Assert.Contains("63", ex.Message);
+    }
+
+    [Fact]
+    public void ConfigureCallback_AddingDuplicatePortToContainer_Throws()
+    {
+        // The pre-callback dedup in ResolvePorts only covers the baseline ports. A callback that adds
+        // a second endpoint resolving to the same (containerPort, protocol) as a preserved one would
+        // make the recipe emit duplicate Kubernetes Service ports, so the post-callback validation
+        // must re-run the dedup on the FINAL literal ports and fail fast.
+        using var builder = TestDistributedApplicationBuilder.Create(DistributedApplicationOperation.Publish);
+        builder.AddRadiusEnvironment("myenv")
+            .ConfigureRadiusInfrastructure(opts =>
+            {
+                opts.Containers[0].Ports["http2"] = new ContainerPortConstruct
+                {
+                    ContainerPort = 5000,
+                    Protocol = "TCP",
+                };
+            });
+        builder.AddContainer("api", "myapp/api", "latest")
+            .WithHttpEndpoint(targetPort: 5000, name: "http");
+
+        using var app = builder.Build();
+        var model = app.Services.GetRequiredService<DistributedApplicationModel>();
+        var radiusEnv = model.Resources.OfType<RadiusEnvironmentResource>().First();
+        RadiusTestHelper.AttachDeploymentTargets(radiusEnv, model);
+        var context = new RadiusBicepPublishingContext(radiusEnv);
+
+        var ex = Assert.Throws<InvalidOperationException>(() => context.GenerateBicep(model));
+        Assert.Contains("api", ex.Message);
+        Assert.Contains("5000/TCP", ex.Message);
     }
 }

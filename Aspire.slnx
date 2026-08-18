@@ -364,6 +364,9 @@
     <Project Path="playground/Qdrant/Qdrant.ApiService/Qdrant.ApiService.csproj" />
     <Project Path="playground/Qdrant/Qdrant.AppHost/Qdrant.AppHost.csproj" />
   </Folder>
+  <Folder Name="/playground/RadiusDemo/">
+    <Project Path="playground/RadiusDemo/RadiusDemo.AppHost/RadiusDemo.AppHost.csproj" />
+  </Folder>
   <Folder Name="/playground/Redis/">
     <Project Path="playground/Redis/Redis.ApiService/Redis.ApiService.csproj" />
     <Project Path="playground/Redis/Redis.AppHost/Redis.AppHost.csproj" />

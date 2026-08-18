@@ -364,8 +364,18 @@
     <Project Path="playground/Qdrant/Qdrant.ApiService/Qdrant.ApiService.csproj" />
     <Project Path="playground/Qdrant/Qdrant.AppHost/Qdrant.AppHost.csproj" />
   </Folder>
+  <Folder Name="/playground/RadiusConnectionsDemo/">
+    <Project Path="playground/RadiusConnectionsDemo/RadiusConnectionsDemo.AppHost/RadiusConnectionsDemo.AppHost.csproj" />
+  </Folder>
   <Folder Name="/playground/RadiusDemo/">
     <Project Path="playground/RadiusDemo/RadiusDemo.AppHost/RadiusDemo.AppHost.csproj" />
+  </Folder>
+  <Folder Name="/playground/RadiusProjectDemo/">
+    <Project Path="playground/RadiusProjectDemo/RadiusProjectDemo.ApiService/RadiusProjectDemo.ApiService.csproj" />
+    <Project Path="playground/RadiusProjectDemo/RadiusProjectDemo.AppHost/RadiusProjectDemo.AppHost.csproj" />
+  </Folder>
+  <Folder Name="/playground/RadiusRecipesDemo/">
+    <Project Path="playground/RadiusRecipesDemo/RadiusRecipesDemo.AppHost/RadiusRecipesDemo.AppHost.csproj" />
   </Folder>
   <Folder Name="/playground/Redis/">
     <Project Path="playground/Redis/Redis.ApiService/Redis.ApiService.csproj" />

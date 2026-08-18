@@ -128,6 +128,30 @@ The namespace configured by `.WithNamespace("radius-demo")` must already exist:
 kubectl --context kind-aspire-radius-demo create namespace radius-demo
 ```
 
+### Using AKS instead of KinD
+
+Every demo in this progression also runs unchanged on AKS. The only differences are how the
+cluster is created and how images reach it:
+
+```bash
+az aks create -g <resource-group> -n <cluster> --node-count 2 --generate-ssh-keys
+az aks get-credentials -g <resource-group> -n <cluster>
+rad install kubernetes --kubecontext <cluster>
+rad workspace create kubernetes <cluster> \
+  --context <cluster> --group default --environment default
+```
+
+Two caveats:
+
+- Container images must come from a registry the cluster can pull from; there is no
+  `kind load docker-image` equivalent. See `RadiusProjectDemo` for the ACR walkthrough. The
+  public images used by demos 1–3 pull without any extra setup.
+- Cleanup deletes billable resources. Prefer putting the cluster and registry in a dedicated
+  resource group so `az group delete` removes everything in one step.
+
+Radius behavior itself is identical on both — including recipe-provisioned resource naming and
+the generated Service names.
+
 ## 4. Deploy
 
 Confirm the active workspace is `aspire-radius-demo` and its Kubernetes context is
@@ -225,8 +249,18 @@ environment are stored in the dedicated cluster and are removed with it.
 
 ## Next steps
 
+The Radius demos are a progression; continue in order:
+
+| Demo | Adds |
+|------|------|
+| **`RadiusDemo`** | **One container, publish, deploy, verify** |
+| `RadiusConnectionsDemo` | A second container and service discovery between them |
+| `RadiusRecipesDemo` | A backing resource, recipes, and real Radius `connections` |
+| `RadiusProjectDemo` | A .NET project instead of a public image |
+
 After the container-only flow is familiar:
 
+- Continue to `playground/RadiusConnectionsDemo`.
 - Read `src/Aspire.Hosting.Radius/README.md` for recipe parameters, cloud provider
   configuration, and secret stores.
 - Compare the generated Bicep with the snapshots under
